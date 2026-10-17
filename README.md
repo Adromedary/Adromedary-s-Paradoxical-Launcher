@@ -1,6 +1,6 @@
-## Adromedary's Paradoxical Launcher 1.0
+## Adromedary's Paradoxical Launcher
 
-First public release. A mod manager and launcher for Crusader Kings III, Europa Universalis IV / V,
+A mod manager and launcher for Crusader Kings III, Europa Universalis IV / V,
 Stellaris, Hearts of Iron IV, Victoria 3 and Imperator: Rome.
 
 ### Highlights
