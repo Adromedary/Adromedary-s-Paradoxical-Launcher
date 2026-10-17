@@ -1,7 +1,7 @@
 ## Adromedary's Paradoxical Launcher
 
-A mod manager and launcher for Crusader Kings III, Europa Universalis IV / V,
-Stellaris, Hearts of Iron IV, Victoria 3 and Imperator: Rome.
+A mod manager and launcher for Crusader Kings III, Europa Universalis IV,
+Stellaris, Hearts of Iron IV, and Imperator: Rome.
 
 ### Highlights
 - **Browse** the game's Steam Workshop inside the app: search, categories, game-version fit,
