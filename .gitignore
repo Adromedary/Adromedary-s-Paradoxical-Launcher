@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+icon.ico
+settings.json
+profiles.json
+installed.json
+updates.json
+not_found.txt
+.work/
+steamcmd/
+downloads/
