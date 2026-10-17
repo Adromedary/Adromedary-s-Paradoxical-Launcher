@@ -17,7 +17,7 @@ import customtkinter as ctk
 
 import glyphs
 
-APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "1.0", "Adromedary"
+APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "1.0.1", "Adromedary"
 APP_SHORT = "Paradoxical Launcher"
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 

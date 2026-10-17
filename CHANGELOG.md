@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+* Fixed: in Browse's panel view the last row of cards couldn't be scrolled to.
+* Fixed: the end of long Help topics could be cut off the same way.
+
 ## 1.0
 
 First public release, as **Adromedary's Paradoxical Launcher** (formerly Paradox Mod Catcher).
