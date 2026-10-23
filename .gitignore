@@ -3,12 +3,13 @@ __pycache__/
 build/
 dist/
 *.spec
-icon.ico
 settings.json
 profiles.json
 installed.json
 updates.json
+catch_list.json
 not_found.txt
 .work/
 steamcmd/
 downloads/
+crash_history.json

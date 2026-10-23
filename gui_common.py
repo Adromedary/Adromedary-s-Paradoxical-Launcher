@@ -17,7 +17,7 @@ import customtkinter as ctk
 
 import glyphs
 
-APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "1.0", "Adromedary"
+APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "2.0", "Adromedary"
 APP_SHORT = "Paradoxical Launcher"
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 
@@ -54,6 +54,54 @@ FONT = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
 MONO = "Consolas" if sys.platform.startswith("win") else "DejaVu Sans Mono"
 WARN_ICON, VER_ICON, UPD_ICON, MISS_ICON = "⚠", "○", "↻", "✗"
 WHITE = ("#ffffff", "#ffffff")
+PALETTES = ["Classic", "Colorful"]
+
+
+def _saved_palette():
+    """The palette is chosen before any widget exists (Tk widgets keep the colours they were made with),
+    so it's read from the settings file here; changing it takes a restart."""
+    env = os.environ.get("PMC_PALETTE")
+    if env:
+        return env
+    try:
+        import json
+        with open(os.path.join(APP_DIR, "settings.json"), encoding="utf-8") as f:
+            v = json.load(f).get("palette", "Classic")
+        return v if v in PALETTES else "Classic"
+    except Exception:
+        return "Classic"
+
+
+PALETTE = _saved_palette()
+COLORFUL = PALETTE == "Colorful"
+# every main tab has its own colour family in the Colorful palette: (strong, soft)
+TAB_COLORS = {
+    "Browse": (("#2458c9", "#6ea2ff"), ("#e1e9fb", "#172440")),
+    "Catch": (("#0b8276", "#34d3bd"), ("#d6efe9", "#0f2b28")),
+    "Library": (("#7b35b5", "#c09bff"), ("#eee0f8", "#2b1f40")),
+    "Playsets": (("#1c8049", "#56d98c"), ("#dcefdf", "#122a1d")),
+    "Conflicts": (("#ad5f08", "#f7b94a"), ("#f8e6c8", "#30230f")),
+    "Crashes": (("#b8263a", "#ff7385"), ("#f8dde0", "#361a20")),
+}
+if COLORFUL:
+    # warm parchment and deep royal tones (light), candle-lit violet night (dark)
+    BG, CARD = ("#ece2cf", "#14101b"), ("#fffaf1", "#1e1727")
+    CARD_HI, BORDER = ("#f6ecda", "#271e32"), ("#d3be98", "#43355a")
+    SURFACE = ("#f9f1e2", "#1a1422")
+    SHADOW = ("#c9b38a", "#07050a")
+    ACCENT, ACCENT_HI = ("#7333a8", "#b98cff"), ("#5f2a8c", "#cba6ff")
+    TEXT, MUTED = ("#2a1f14", "#f3eadb"), ("#6b5a45", "#b8a891")
+    FAINT = ("#9a8970", "#7d705f")
+    ACCENT_SOFT = ("#ecdcf6", "#2c1f3f")
+    OK_SOFT, WARN_SOFT = ("#dcecd4", "#132a1d"), ("#f7e2bd", "#30230f")
+    ERR_SOFT, INFO_SOFT = ("#f6d8d6", "#371b22"), ("#e6dcf6", "#241d3e")
+    TEAL_SOFT, MUTED_SOFT = ("#d4ece5", "#102b28"), ("#e6d9c2", "#2a2234")
+    SEV_SOFT = {"critical": ERR_SOFT, "high": WARN_SOFT, "medium": ("#f5e8c4", "#2e2711"), "low": MUTED_SOFT,
+                "info": TEAL_SOFT}
+    BANNER, DANGER_HOVER = WARN_SOFT, ("#f1cdcf", "#4a2228")
+    SEL = ("#e6d2f4", "#3b2a5a")
+    ROW_ALT = ("#faf2e4", "#221a2d")
+    TAB_ON, TAB_ON_HI = ("#e6d2f4", "#3b2a5a"), ("#dcc3f0", "#47326b")
 
 
 # ------------------------------------------------------------------ a guard for customtkinter's scrollbar
@@ -191,6 +239,57 @@ def icon(name, size=16, color=None):
         _icons[key] = ctk.CTkImage(light_image=glyphs.draw(name, size * 3, light),
                                    dark_image=glyphs.draw(name, size * 3, dark), size=(size, size))
     return _icons[key]
+
+
+def clearable(entry, on_clear=None):
+    """A small x at the end of a search box that empties it at once. It shows only while there's text."""
+    b = ctk.CTkButton(entry, text="", image=icon("close", 11, MUTED), width=20, height=20, corner_radius=10,
+                      fg_color="transparent", hover_color=BORDER, border_width=0)
+
+    def update(e=None):
+        try:
+            has = bool(entry.get())
+        except Exception:
+            return
+        if has and not b.winfo_ismapped():
+            b.place(relx=1.0, rely=0.5, x=-5, anchor="e")
+        elif not has and b.winfo_ismapped():
+            b.place_forget()
+
+    def clear():
+        entry.delete(0, "end")
+        entry.focus_set()
+        update()
+        if on_clear:
+            on_clear()
+    b.configure(command=clear)
+    Tooltip(b, "Clear")
+    # keep typed text clear of the x
+    grid = entry._create_grid
+
+    def make_room():
+        grid()
+        try:
+            left = entry._entry.grid_info().get("padx", 0)
+            left = int(left[0] if isinstance(left, (tuple, list)) else str(left).split()[0])
+            entry._entry.grid_configure(padx=(left, left + px(20)))
+        except Exception:
+            pass
+    entry._create_grid = make_room
+    make_room()
+    for ev in ("<KeyRelease>", "<FocusIn>", "<FocusOut>", "<<Paste>>", "<<Cut>>"):
+        entry.bind(ev, lambda e: entry.after_idle(update), add="+")
+    for name in ("insert", "delete"):                 # text put in or taken out by the app
+        orig = getattr(entry, name)
+
+        def wrapped(*a, _orig=orig, **k):
+            r = _orig(*a, **k)
+            entry.after_idle(update)
+            return r
+        setattr(entry, name, wrapped)
+    entry._clear_btn = b
+    update()
+    return b
 
 
 def button(parent, text, command, primary=False, danger=False, width=None, height=30, icon_name=None,
@@ -348,12 +447,15 @@ def tree_tags(tree):
     tree.tag_configure("odd", background=pick(ROW_ALT))
 
 
+COLUMNS = {"cfg": None, "save": None}     # set by the app: where dragged column widths are kept
+
+
 class Tree(ctk.CTkFrame):
     """A ttk.Treeview with a themed scrollbar. columns: [(id, heading, width, anchor, stretch)].
-    Widths are design units (scaled to the display)."""
+    Widths are design units (scaled to the display). With a key, widths you drag are remembered."""
 
     def __init__(self, parent, columns, show_tree=False, selectmode="extended", height=10, big=False,
-                 image_width=0, main=None, drop=(), min_main=200):
+                 image_width=0, main=None, drop=(), min_main=200, key=None):
         """main: the column that gets the spare width; drop: columns hidden (in this order) when the list
         gets too narrow for `main` to keep min_main, and shown again when there's room."""
         super().__init__(parent, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER, height=40)
@@ -368,6 +470,7 @@ class Tree(ctk.CTkFrame):
             self.tree.heading(cid, text=head, anchor=anchor)
             self.tree.column(cid, width=px(width), minwidth=px(30), anchor=anchor, stretch=stretch)
         self.show_tree = show_tree
+        self.pic_col = bool(image_width)
         if show_tree:
             w = px(image_width or 26)
             self.tree.column("#0", width=w, minwidth=w, stretch=False)
@@ -381,8 +484,81 @@ class Tree(ctk.CTkFrame):
         self.main, self.drop, self.min_main = main, list(drop), min_main
         self.hidden = []
         self._tw = 0
+        self.key = key
+        self._drag = None
+        saved = (COLUMNS["cfg"] or {}).get(key) if key else None
+        for cid, w in (saved or {}).items():            # widths you dragged last time (design units)
+            if cid in self.cols and not self.cols[cid][4] and isinstance(w, (int, float)) and 24 <= w <= 900:
+                c = self.cols[cid]
+                self.cols[cid] = (c[0], c[1], int(w), c[3], c[4])
+                self.tree.column(cid, width=px(w))
         if main and drop:
             self.tree.bind("<Configure>", self._fit, add="+")
+        # Dividers between headings: the edge you drag moves, the column on its left changes size and
+        # the one on its right gives or takes the difference (ttk's own handler moves the other edge).
+        self.tree.bind("<ButtonPress-1>", self._press, add="+")
+        self.tree.bind("<B1-Motion>", self._motion, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._release, add="+")
+
+    # ---- column dividers
+    def _visible(self):
+        dc = list(self.tree.cget("displaycolumns"))
+        return [c for c in self.order if c in dc] if dc and dc != ["#all"] else list(self.order)
+
+    def _press(self, e):
+        if self.tree.identify_region(e.x, e.y) != "separator":
+            return None
+        cols = self._visible()
+        x = int(self.tree.column("#0", "width")) if self.show_tree else 0
+        left = None
+        if self.show_tree and abs(e.x - x) <= px(6):
+            if self.pic_col or not cols:
+                return "break"                     # the picture column keeps its size
+            self._drag = (e.x, "#0", cols[0], x, int(self.tree.column(cols[0], "width")))
+            return "break"
+        for c in cols:
+            x += int(self.tree.column(c, "width"))
+            if abs(e.x - x) <= px(6):
+                left = c
+                break
+        if left is None:
+            return "break"
+        i = cols.index(left)
+        right = cols[i + 1] if i + 1 < len(cols) else (self.main if self.main in cols and self.main != left
+                                                        else None)
+        if right is None:
+            return "break"
+        self._drag = (e.x, left, right, int(self.tree.column(left, "width")), int(self.tree.column(right, "width")))
+        return "break"
+
+    def _motion(self, e):
+        if not self._drag:
+            return None
+        x0, left, right, wl, wr = self._drag
+        lo = px(30)
+        d = e.x - x0
+        d = max(lo - wl, min(d, wr - lo))
+        self.tree.column(left, width=wl + d)
+        self.tree.column(right, width=wr - d)
+        return "break"
+
+    def _release(self, e):
+        if not self._drag:
+            return None
+        _, left, right, _, _ = self._drag
+        self._drag = None
+        for cid in (left, right):
+            c = self.cols.get(cid)
+            if c is None:
+                continue
+            if not c[4]:
+                self.cols[cid] = (c[0], c[1], int(round(units(int(self.tree.column(cid, "width"))))), c[3], c[4])
+        self._tw = 0
+        if self.key and COLUMNS["cfg"] is not None:
+            COLUMNS["cfg"][self.key] = {cid: c[2] for cid, c in self.cols.items() if not c[4]}
+            if COLUMNS["save"]:
+                COLUMNS["save"]()
+        return "break"
 
     def _fixed(self, visible):
         w = sum(px(self.cols[c][2]) for c in visible if not self.cols[c][4])
@@ -418,6 +594,17 @@ class Tree(ctk.CTkFrame):
             break
         if changed:
             self.tree.configure(displaycolumns=visible)
+        # never wider than the list: the stretchy columns give up the difference (the last ones stay in view)
+        over = self._fixed(visible) + sum(int(self.tree.column(c, "width")) for c in visible if self.cols[c][4]) \
+            - width + px(2)
+        stretchy = [c for c in visible if self.cols[c][4]]
+        if over > 0 and stretchy:
+            for c in stretchy:
+                w = int(self.tree.column(c, "width"))
+                cut = min(over, max(0, w - px(80)))
+                if cut:
+                    self.tree.column(c, width=w - cut)
+                    over -= cut
 
     def stripe(self, parent=""):
         """Tint every other row (keeps each row's own tags)."""
@@ -556,6 +743,18 @@ def ctk_image(pil_image, size=None):
     return ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=size)
 
 
+_badges = {}
+
+
+def badge_image(role, size=16):
+    """A role's badge as a CTkImage, made once and kept: a label never points at an image Tk has thrown away."""
+    import icons
+    key = (getattr(role, "name", str(role)), size)
+    if key not in _badges:
+        _badges[key] = ctk_image(icons.badge(role, 48), (size, size)) if icons.available() else None
+    return _badges[key]
+
+
 def role_chip(parent, role, text=None, size=16):
     """A small label with the role's badge and name."""
     import icons
@@ -606,14 +805,19 @@ class TabBar(ctk.CTkFrame):
     def get(self):
         return self.current
 
+    def colors(self, name):
+        """(strong, soft) colours of a tab: its own family in the Colorful palette, the accent otherwise."""
+        return TAB_COLORS.get(name, (ACCENT, ACCENT_SOFT)) if COLORFUL else (ACCENT, ACCENT_SOFT)
+
     def set(self, name):
         self.current = name
         for n, t in self.tabs.items():
             sel = n == name
-            t["frame"].configure(fg_color=ACCENT_SOFT if sel else "transparent")
-            t["label"].configure(text_color=ACCENT if sel else MUTED)
-            t["icon"].configure(image=icon(self.icons_for.get(n, "info"), 17, ACCENT if sel else MUTED))
-            t["bar"].configure(fg_color=ACCENT if sel else "transparent")
+            strong, soft = self.colors(n)
+            t["frame"].configure(fg_color=soft if sel else "transparent")
+            t["label"].configure(text_color=strong if sel else MUTED)
+            t["icon"].configure(image=icon(self.icons_for.get(n, "info"), 17, strong if (sel or COLORFUL) else MUTED))
+            t["bar"].configure(fg_color=strong if sel else "transparent")
 
     def set_badge(self, name, text, color=None):
         """Small counter inside a tab ('' hides it)."""
@@ -623,6 +827,65 @@ class TabBar(ctk.CTkFrame):
             return
         b.configure(text=str(text), fg_color=color or ACCENT)
         b.grid()
+
+
+class Ribbon(ctk.CTkLabel):
+    """Colorful palette: a textured band under the app bar in the current tab's colour (a heraldic lattice
+    over a gradient). Redrawn when the window is resized or the tab changes."""
+    HEIGHT = 7
+
+    def __init__(self, parent):
+        super().__init__(parent, text="", height=self.HEIGHT, fg_color=SURFACE, corner_radius=0)
+        self.tab, self._seen_w, self._job = None, 0, None
+        self.bind("<Configure>", self._resized, add="+")
+
+    def _resized(self, e):
+        if abs(e.width - self._seen_w) > 2:
+            self._seen_w = e.width
+            if self._job:
+                self.after_cancel(self._job)
+            self._job = self.after(120, self.draw)
+
+    def set_tab(self, name):
+        if name != self.tab:
+            self.tab = name
+            self.draw()
+
+    @staticmethod
+    def texture(w, h, strong, soft):
+        from PIL import Image, ImageDraw
+        def rgb(c):
+            return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+        a, b = rgb(strong), rgb(soft)
+        img = Image.new("RGB", (w, h))
+        d = ImageDraw.Draw(img)
+        for x in range(w):                                  # strong on the left, fading to soft on the right
+            t = min(1.0, x / max(1, w * 0.85)) ** 1.6
+            d.line([(x, 0), (x, h)], fill=tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3)))
+        over = Image.new("RGBA", (w, h), (0, 0, 0, 0))      # a lattice of small diamonds, lightly
+        o = ImageDraw.Draw(over)
+        step = max(6, h * 2)
+        for x in range(-step, w + step, step):
+            o.line([(x, 0), (x + h, h)], fill=(255, 255, 255, 46), width=1)
+            o.line([(x + h, 0), (x, h)], fill=(0, 0, 0, 30), width=1)
+        img = Image.alpha_composite(img.convert("RGBA"), over)
+        ImageDraw.Draw(img).line([(0, h - 1), (w, h - 1)], fill=(0, 0, 0, 40))
+        return img
+
+    def draw(self):
+        self._job = None
+        if not COLORFUL or not self.tab or not glyphs.available():
+            return
+        w = max(10, self.winfo_width())
+        h = max(4, px(self.HEIGHT))
+        strong, soft = TAB_COLORS.get(self.tab, (ACCENT, ACCENT_SOFT))
+        try:
+            self._img = ctk.CTkImage(light_image=self.texture(w, h, strong[0], soft[0]),
+                                     dark_image=self.texture(w, h, strong[1], soft[1]),
+                                     size=(units(w), self.HEIGHT))
+            self.configure(image=self._img)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------ resizable splits
@@ -703,7 +966,18 @@ class RichText(tk.Text):
             self.bind(ev, lambda e: "break")
         self.bind("<Control-a>", lambda e: (self.tag_add("sel", "1.0", "end-1c"), "break")[1])
         self.bind("<Configure>", lambda e: self.after_idle(self.fit))
+        # the wheel scrolls the panel around it; the text itself never scrolls (it shows everything)
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind(ev, lambda e: self.after_idle(self._top), add="+")
         self.restyle()
+
+    def _top(self):
+        try:
+            if self.yview()[0] > 0:
+                self.yview_moveto(0)
+                self.fit()
+        except tk.TclError:
+            pass
 
     def _key(self, e):
         if e.state & 0x4 and e.keysym.lower() in ("c", "insert", "a"):
@@ -831,6 +1105,8 @@ class DetailPane(ctk.CTkFrame):
         self.act_row.grid(row=5, column=0, sticky="ew", padx=14, pady=(10, 2))
         self.text.grid(row=6, column=0, sticky="ew", padx=16, pady=(4, 16))
         self.on_resize = None
+        self._pic_cmd = None
+        self.pic.bind("<Button-1>", lambda e: self._pic_cmd() if self._pic_cmd else None)
         self._width, self._job, self._req = 0, None, None
         self._used = set()
         self._pics = {}
@@ -882,12 +1158,16 @@ class DetailPane(ctk.CTkFrame):
 
     def begin(self):
         self._used = set()
+        self._pic_cmd = None
         self.text.clear()
 
-    def picture(self, pil_image, key=None):
-        """A square picture across the panel (pil_image: any size; drawn crisp at the display scale)."""
+    def picture(self, pil_image, key=None, command=None):
+        """A square picture across the panel (pil_image: any size; drawn crisp at the display scale).
+        command: what clicking it does (e.g. open it full size)."""
         if pil_image is None:
             return
+        self._pic_cmd = command
+        self.pic.configure(cursor="hand2" if command else "")
         s = self.side()
         k = (key, s) if key else None
         img = self._pics.get(k) if k else None
@@ -921,9 +1201,35 @@ class DetailPane(ctk.CTkFrame):
             c = self.chip_pool[i]
             c.configure(text=(" " + text) if (ic or img) else text, text_color=col, fg_color=soft,
                         image=img or (icon(ic, 13, col) if ic else None))
-            c.grid(row=0, column=i, padx=(0, 6), sticky="w")
+            c.pack_forget()
         for c in self.chip_pool[len(items):]:
-            c.grid_remove()
+            c.pack_forget()
+        # flow: as many on a line as fit, the rest on the next line
+        try:
+            self.chip_row.update_idletasks()
+        except Exception:
+            pass
+        avail = self.body.winfo_width() - px(44)
+        if avail < px(120):
+            avail = px(DETAIL_WIDTH - 44)
+        lines = getattr(self, "_chip_lines", None)
+        if lines is None:
+            lines = self._chip_lines = []
+        line, x = 0, 0
+        for i in range(len(items)):
+            c = self.chip_pool[i]
+            w = c.winfo_reqwidth() + px(6)
+            if x and x + w > avail:
+                line, x = line + 1, 0
+            while line >= len(lines):
+                f = ctk.CTkFrame(self.chip_row, fg_color="transparent", height=1)
+                lines.append(f)
+            lines[line].grid(row=line, column=0, sticky="w", pady=(0, 4))
+            c.pack(in_=lines[line], side="left", padx=(0, 6))
+            c.tk.call("raise", c._w)                    # above the line frame it sits in
+            x += w
+        for f in lines[line + 1 if items else 0:]:
+            f.grid_remove()
         if items:
             self._used.add("chips")
 
@@ -969,6 +1275,65 @@ class DetailPane(ctk.CTkFrame):
     def clear(self):
         self.begin()
         self.end()
+
+
+# ------------------------------------------------------------------ right-click menus
+_menu_icons = {}
+RIGHT_CLICK = ("<Button-3>", "<Button-2>") if sys.platform == "darwin" else ("<Button-3>",)
+
+
+def _menu_icon(name, color):
+    key = (name, color, round(scale(), 2))
+    if key not in _menu_icons:
+        try:
+            from PIL import ImageTk
+            im = glyphs.draw(name, px(16), color)
+            _menu_icons[key] = ImageTk.PhotoImage(im) if im is not None else None
+        except Exception:
+            _menu_icons[key] = None
+    return _menu_icons[key]
+
+
+def popup_menu(widget, event, items):
+    """A right-click menu at the pointer. items: (label, icon name, command[, enabled]), None for a line,
+    False for an entry left out; (label, icon, [sub items]) opens a sub-menu."""
+    def build(parent, entries):
+        m = tk.Menu(parent, tearoff=0, bg=pick(CARD), fg=pick(TEXT), activebackground=pick(SEL),
+                    activeforeground=pick(TEXT), disabledforeground=pick(FAINT), bd=0, relief="flat",
+                    font=tk_font(12), activeborderwidth=0)
+        last_sep = True
+        for it in entries:
+            if it is False:
+                continue
+            if it is None:
+                if not last_sep:
+                    m.add_separator()
+                    last_sep = True
+                continue
+            label, ic, cmd = it[0], it[1], it[2]
+            enabled = it[3] if len(it) > 3 else True
+            img = _menu_icon(ic, pick(ERR) if label.startswith("Delete") else pick(MUTED)) if ic else None
+            opts = dict(label="  " + label, state="normal" if enabled else "disabled")
+            if img is not None:
+                opts.update(image=img, compound="left")
+            if isinstance(cmd, list):
+                m.add_cascade(menu=build(m, cmd), **opts)
+            else:
+                m.add_command(command=cmd, **opts)
+            last_sep = False
+        if last_sep and m.index("end") is not None:
+            m.delete("end")
+        return m
+    menu = build(widget, items)
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
+
+
+def copy_text(widget, text):
+    widget.clipboard_clear()
+    widget.clipboard_append(text)
 
 
 def error_log(app_dir, text):

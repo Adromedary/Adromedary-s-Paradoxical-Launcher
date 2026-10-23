@@ -139,3 +139,55 @@ def is_trivial(body):
     """`always = yes/no` style bodies: compatibility hooks, not real content."""
     b = " ".join(strip_comments(body).split())
     return bool(re.fullmatch(r"(always\s*=\s*(yes|no)|value\s*=\s*-?\d+(\.\d+)?|-?\d+(\.\d+)?)?", b))
+
+
+def define_values(text):
+    """common/defines: {(category, KEY): normalised value}. Categories are the top-level blocks
+    (NGame = { KEY = value ... })."""
+    out = {}
+    for cat, body, _ in blocks(text):
+        if not body or cat.startswith("@"):
+            continue
+        for key, val, _ in blocks(body):
+            out[(cat, key)] = " ".join(val.split())
+    return out
+
+
+_GUI_TEMPLATE = re.compile(r"(?m)^\s*template\s+([A-Za-z0-9_]+)\b")
+_GUI_TYPE = re.compile(r"\btype\s+([A-Za-z0-9_]+)\s*=")
+_GUI_TYPES = re.compile(r"(?m)^\s*types\s+[A-Za-z0-9_]+\s*\{")
+
+
+def gui_names(text):
+    """Templates and types a .gui file defines ({name: "template" | "type"}). Both are FIOS: the first
+    file read (by name) wins."""
+    text = strip_comments(text)
+    out = {n: "template" for n in _GUI_TEMPLATE.findall(text)}
+    for m in _GUI_TYPES.finditer(text):
+        end = _skip_block(text, text.index("{", m.start()))
+        for n in _GUI_TYPE.findall(text, m.end(), end):
+            out.setdefault(n, "type")
+    return out
+
+
+def object_bodies(text):
+    """{top-level key: normalised body} of a script file (for comparing objects inside shared files)."""
+    out = {}
+    for key, body, _ in blocks(text):
+        if key.startswith("@") or key in _SKIP_KEYS:
+            continue
+        out.setdefault(key, norm(body))
+    return out
+
+
+def object_text(text, key):
+    """The original text of one top-level object (`key = { ... }`), for reports. '' if not there."""
+    raw = text
+    for m in re.finditer(r"(?m)^[ \t]*" + re.escape(key) + r"\s*=\s*", raw):
+        j = m.end()
+        if j < len(raw) and raw[j] == "{":
+            end = _skip_block(raw, j)
+            return raw[m.start():end].strip("\n")
+        line_end = raw.find("\n", j)
+        return raw[m.start():line_end if line_end >= 0 else len(raw)].strip()
+    return ""

@@ -6,7 +6,8 @@ file names (objects, events, on_actions) or simply about presence (dependencies)
 evidence about which mod should load later, strongest first:
 
     weight   evidence
-    1000     your own rules; dependencies a mod declares
+    1000     your own rules (this before that; first; last); dependencies a mod declares
+      60     your "load early" / "load late"
       80     its name says it's a compatch / patch for the other mod
       40     its Workshop page says "load after X" / "below X" (X linked, named or abbreviated)
   25/file    its copy of a shared file already contains the other mod's changes (a merge)
@@ -16,15 +17,23 @@ evidence about which mod should load later, strongest first:
              uses elsewhere (losing those breaks other parts of it)
    <=30      it builds on the other mod (uses names only the other defines): add-ons load after their base
       30     replace_path: mods adding files to a folder another mod replaces load after it
+      20     (optional) mods made for an older game version load first, so newer ones win their shared
+             files (2 between mods that share nothing: below the conventions)
        4     "load at the very top / bottom" on a Workshop page (per other mod)
-       3     fix packs and total conversions near the top (as the Unofficial Patch asks)
+       3     fix packs and total conversions near the top (as the Unofficial Patch asks); interface mods
+             near the bottom (so other mods' copies don't replace their windows)
      0.4     conventional bands: foundations (fixes, conversions, maps, frameworks, overhauls) first,
              add-ons / compatches / translations last; regular content keeps your order
    0.001     keep the current relative order when nothing else decides
 
 The best order is the one satisfying the most total weight (a weighted linear-ordering problem):
 greedy start, then single-mod moves until nothing improves, from two starting points.
+
+Every reason also says how sure it is: certain (your rules, declared dependencies), likely (evidence in
+the files or on the Workshop page), possible (weaker evidence) or convention (no effect in game).
 """
+import re
+
 
 import analysis as A
 import roles as R
@@ -32,6 +41,10 @@ import roles as R
 W_HARD, W_COMPATCH, W_HINT, W_MERGE, W_MERGE_CAP = 1000.0, 80.0, 40.0, 25.0, 100.0
 W_CLASH, W_CLASH_CAP, W_BROKEN, W_BUILDS_CAP = 20.0, 40.0, 25.0, 30.0
 W_REPLACE, W_TOPBOTTOM, W_CONVENTION, W_TIER, W_KEEP = 30.0, 4.0, 3.0, 0.4, 0.001
+W_PLACE = 60.0                     # your "load early / late" (first / last are hard rules)
+W_VERSION, W_VERSION_SHARED = 2.0, 20.0   # "mods for older game versions load first" (optional)
+# general placement rules, stored as (mode, mod key) next to the (before, after) pairs
+PLACEMENTS = {"@first": "Loads first", "@early": "Loads early", "@late": "Loads late", "@last": "Loads last"}
 
 
 class Edge:
@@ -56,8 +69,30 @@ def area_factor(rel):
     return 1.0
 
 
-def build_edges(an, keys, rules=()):
-    """Preferences between the mods in `keys` (a playset's enabled mods)."""
+def made_for(supported):
+    """'1.18.2' / '1.18.*' -> (1, 18); None when it doesn't name a major.minor version ('1.*', '', 'any')."""
+    m = re.match(r"\s*v?(\d+)\.(\d+)", (supported or "").lower())          # '1.20*' and '1.20.0.4' too
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+SURE_LABEL = {"certain": "Certain", "likely": "Likely", "possible": "Possible", "convention": "Convention"}
+
+
+def sureness(kind, weight):
+    """How sure a reason is: certain / likely / possible / convention."""
+    if kind in ("rule", "dependency") or (kind == "placement" and weight >= W_PLACE):
+        return "certain"
+    if kind in ("compatch", "merge", "replace_path", "hint", "position") or (kind in ("clash", "builds_on") and
+                                                                            weight >= 15):
+        return "likely"
+    if kind in ("clash", "builds_on", "version", "placement"):
+        return "possible"
+    return "convention"
+
+
+def build_edges(an, keys, rules=(), older_first=False):
+    """Preferences between the mods in `keys` (a playset's enabled mods). older_first: mods made for an older
+    game version load before newer ones."""
     on = [an.facts[k] for k in keys if k in an.facts]
     keyset = {f.key for f in on}
     E = []
@@ -69,9 +104,26 @@ def build_edges(an, keys, rules=()):
     by_name = {}
     for f in on:
         by_name.setdefault(A.clean_title(f.name).lower(), f)
+    place = {}
     for a, b in rules:
-        if a in keyset and b in keyset:
+        if a in PLACEMENTS:
+            if b in keyset:
+                place[b] = a
+        elif a in keyset and b in keyset:
             add(an.facts[a], an.facts[b], W_HARD, f'your rule: "{an.facts[a].name}" before "{an.facts[b].name}"', "rule")
+    rank = {"@first": 0, "@early": 1, "": 2, "@late": 3, "@last": 4}
+    for k, mode in place.items():                       # your placements: first / early / late / last
+        f = an.facts[k]
+        w = W_HARD if mode in ("@first", "@last") else W_PLACE
+        why = f'your rule: "{f.name}" {PLACEMENTS[mode].lower()}'
+        for o in on:
+            if o is f:
+                continue
+            ro = rank[place.get(o.key, "")]
+            if mode in ("@first", "@early") and ro > rank[mode]:
+                add(f, o, w, why, "placement", f)
+            elif mode in ("@late", "@last") and ro < rank[mode]:
+                add(o, f, w, why, "placement", f)
     for f in on:
         for dep in f.mod.dependencies:
             t = by_name.get(A.clean_title(dep).lower()) or next(
@@ -116,6 +168,16 @@ def build_edges(an, keys, rules=()):
                 if o is not f and any(r.startswith(rp + "/") for r in o.files):
                     add(f, o, W_REPLACE, f'"{f.name}" replaces the game\'s {rp}/ and "{o.name}" adds files there',
                         "replace_path", f)
+    # compatches the analysis recognised: after both mods they patch
+    for (ka, kb), cands in (getattr(an, "patches", {}) or {}).items():
+        if ka not in keyset or kb not in keyset:
+            continue
+        for ck, sure, why in cands:
+            if ck in keyset:
+                c = an.facts[ck]
+                for base in (ka, kb):
+                    add(an.facts[base], c, W_COMPATCH, f'"{c.name}" patches "{an.facts[ka].name}" and '
+                                                       f'"{an.facts[kb].name}" together ({why})', "compatch", c)
     # conventions and tidy roles
     for a in on:
         ra = a.role.role if a.role else R.UNKNOWN
@@ -125,8 +187,24 @@ def build_edges(an, keys, rules=()):
             rb = b.role.role if b.role else R.UNKNOWN
             if ra.id in ("fix", "total_conversion") and rb.id not in ("fix", "total_conversion"):
                 add(a, b, W_CONVENTION, f"{ra.name.lower()}s go near the top", "convention", a)
+            elif rb.id == "ui" and ra.id != "ui" and band(ra) < 2:
+                add(a, b, W_CONVENTION, "interface mods go near the bottom, so other mods' copies of the game's "
+                                        "windows don't replace theirs", "convention", b)
             elif band(ra) < band(rb):
                 add(a, b, W_TIER, f"conventional order: {ra.name.lower()} before {rb.name.lower()}", "tier")
+    # optional: mods made for older game versions first, so the newer ones win
+    if older_first:
+        ver = {f.key: made_for(f.mod.supported) for f in on}
+        for a in on:
+            for b in on:
+                va, vb = ver[a.key], ver[b.key]
+                if a is b or va is None or vb is None or va >= vb:
+                    continue
+                pair = (a.key, b.key) if (a.key, b.key) in an.conflicts else (b.key, a.key)
+                shared = any(c.kind == "clash" for c in an.conflicts.get(pair, ()))
+                add(a, b, W_VERSION_SHARED if shared else W_VERSION,
+                    f'made for game {va[0]}.{va[1]}: your setting loads mods for older game versions first, so '
+                    f'newer ones win', "version", a)
     # shared files
     for (ka, kb), fcs in an.conflicts.items():
         if ka not in keyset or kb not in keyset:
@@ -204,16 +282,17 @@ class Result:
         self.reasons = {}          # key -> [(satisfied, weight, text)]
         self.moved = 0
         self.broken = []           # strong preferences that could not all be met
+        self.sure = {}             # moved key -> certain / likely / possible / convention
 
 
-def solve(an, current, enabled, rules=()):
+def solve(an, current, enabled, rules=(), older_first=False):
     """current: all keys in today's order; enabled: set of enabled keys; rules: [(before, after)] by key.
     Returns a Result with the best order found."""
     keys = [k for k in current if k in enabled and k in an.facts]
     n = len(keys)
     idx = {k: i for i, k in enumerate(keys)}
     W = [[0.0] * n for _ in range(n)]
-    edges = build_edges(an, keys, rules)
+    edges = build_edges(an, keys, rules, older_first)
     for e in edges:
         if e.before in idx and e.after in idx:
             W[idx[e.before]][idx[e.after]] += e.weight
@@ -234,13 +313,22 @@ def solve(an, current, enabled, rules=()):
     res.order = [next(it) if (k in enabled and k in an.facts) else k for k in current]
     res.moved = moved_count(keys, res.enabled_order)
     res.reasons, res.broken = explain(an, res.enabled_order, edges)
+    for k in moved_keys(keys, res.enabled_order):
+        why = main_reason(res.reasons.get(k, []))
+        res.sure[k] = why["sure"] if why else "convention"
     return res
 
 
-def explain(an, enabled_order, edges=None, rules=()):
-    """Why each mod sits where it does in this order: ({key: [reason dicts]}, [strong edges not met])."""
+def main_reason(reasons):
+    """The strongest reason that this order honours (None: only its role's usual place)."""
+    return next((x for x in reasons if x["ok"] and x["kind"] != "tier"), None)
+
+
+def explain(an, enabled_order, edges=None, rules=(), older_first=False):
+    """Why each mod sits where it does in this order: ({key: [reason dicts]}, [strong edges not met]).
+    Each reason: {ok, weight, text, other, rel, kind, sure}."""
     if edges is None:
-        edges = build_edges(an, enabled_order, rules)
+        edges = build_edges(an, enabled_order, rules, older_first)
     reasons, broken = {k: [] for k in enabled_order}, []
     pos = {k: i for i, k in enumerate(enabled_order)}
     agg = {}
@@ -252,7 +340,7 @@ def explain(an, enabled_order, edges=None, rules=()):
             broken.append(e)
         if e.kind == "tier":
             continue
-        if e.kind in ("position", "convention"):           # one wish towards many mods: report once
+        if e.kind in ("position", "convention", "placement", "version"):   # one wish towards many: report once
             a = agg.setdefault((e.owner, e.reason, e.kind), [0, 0, 0.0])
             a[0] += ok
             a[1] += 1
@@ -260,12 +348,12 @@ def explain(an, enabled_order, edges=None, rules=()):
             continue
         for me, other, rel in ((e.after, e.before, "after"), (e.before, e.after, "before")):
             reasons[me].append({"ok": ok, "weight": e.weight, "text": e.reason, "other": other,
-                                "rel": rel, "kind": e.kind})
+                                "rel": rel, "kind": e.kind, "sure": sureness(e.kind, e.weight)})
     for (owner, reason, kind), (n_ok, n, w) in agg.items():
         if owner in reasons:
             extra = "" if n_ok == n else f" (kept for {n_ok} of {n} mods; stronger reasons decided the rest)"
             reasons[owner].append({"ok": n_ok == n, "weight": w, "text": reason + extra, "other": None,
-                                   "rel": kind, "kind": kind})
+                                   "rel": kind, "kind": kind, "sure": sureness(kind, w / max(1, n))})
     for k in reasons:
         reasons[k].sort(key=lambda r: (-r["weight"], not r["ok"]))
     return reasons, broken

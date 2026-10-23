@@ -10,6 +10,7 @@ Catch:     downloads mods (or whole collections) through a chain of sites and in
 Library:   every installed mod with its role, conflicts, version notes and Workshop updates.
 Playsets:  named mod lists in load order, Auto-sort, and Play to start the game with them directly.
 Conflicts: everything that can go wrong in the active playset, explained.
+Crashes:   after a crash: the mods most likely to blame, with the evidence, and a step-by-step culprit hunt.
 
 Run:   python paradoxical_launcher.py
 Build: double-click build.bat  (produces dist\\ParadoxicalLauncher.exe)
@@ -17,6 +18,8 @@ Build: double-click build.bat  (produces dist\\ParadoxicalLauncher.exe)
 import hashlib
 import json
 import multiprocessing
+import subprocess
+import sys
 import os
 import pickle
 import queue
@@ -24,6 +27,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import webbrowser
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -37,16 +41,19 @@ import installer
 import launcher as LA
 import modscan
 import sources as S
+import storage as ST
 import updates as U
 import versions as V
 from browser_helper import BrowserBridge
 from gui_browse import BrowsePage
 from gui_catch import KIND_COLOR, CatchPage
-from gui_common import (ACCENT, APP_DIR, APP_NAME, APP_SHORT, APP_VERSION, AUTHOR, BG, BORDER, CARD,
-                        CARD_HI, CRIT, ERR, MUTED, OK, PLAY, PLAY_HI, SHADOW, SURFACE, TAB_ON, TAB_ON_HI, TEXT, THEMES,
-                        WARN, WARN_ICON, WHITE, Banner, Split, TabBar, Tooltip, button, card, ctk_image, error_log, font,
-                        fit_geometry, icon, open_folder, pick, px, set_root, style_trees, units)
+from gui_common import (COLORFUL, PALETTE, TAB_COLORS, Ribbon, ACCENT, ACCENT_HI, ACCENT_SOFT, APP_DIR, APP_NAME, APP_SHORT, APP_VERSION, AUTHOR, BG, BORDER,
+                        CARD, CARD_HI, COLUMNS, CRIT, ERR, FAINT, MUTED, MUTED_SOFT, OK, PLAY, PLAY_HI, SHADOW,
+                        SURFACE, TEAL, TEAL_SOFT, TEXT, THEMES, WARN, WARN_ICON, WARN_SOFT, WHITE,
+                        Banner, button, card, ctk_image, error_log, fit_geometry, font, icon, open_folder, pick, px,
+                        set_root, Split, style_trees, TabBar, Tooltip, units)
 from gui_conflicts import ConflictsPage
+from gui_crash import CrashPage
 from gui_library import LibraryPage
 from gui_playsets import PlaysetsPage
 from profiles import Profiles
@@ -55,10 +62,11 @@ SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 REGISTRY_FILE = os.path.join(APP_DIR, "installed.json")
 UPDATES_FILE = os.path.join(APP_DIR, "updates.json")
 PROFILES_FILE = os.path.join(APP_DIR, "profiles.json")
+CATCH_FILE = os.path.join(APP_DIR, "catch_list.json")     # Browse's catch list, kept until each mod is installed
 WORK_DIR = os.path.join(APP_DIR, ".work")
-TABS = ["Browse", "Catch", "Library", "Playsets", "Conflicts"]
+TABS = ["Browse", "Catch", "Library", "Playsets", "Conflicts", "Crashes"]
 TAB_ICONS = {"Browse": "browse", "Catch": "download", "Library": "library", "Playsets": "playsets",
-             "Conflicts": "conflicts"}
+             "Conflicts": "conflicts", "Crashes": "crash"}
 OTHER_FOLDER = "Other mod folder..."
 
 DEFAULTS = {
@@ -82,6 +90,9 @@ DEFAULTS = {
     "tab": "Browse",
     "show_log": True,
     "workshop_hints": True,       # read Workshop pages for "load after X" notes when sorting
+    "older_first": False,         # Auto-sort: mods made for older game versions load first
+    "palette": "Classic",         # Classic or Colorful (read at start: changing it takes a restart)
+    "seen_version": "",           # the last version whose "What's new" was shown
     "add_new_to_playset": True,   # freshly downloaded mods join the active playset
     "play_continue": False,
     "play_debug": False,
@@ -92,11 +103,20 @@ DEFAULTS = {
     "welcome_done": False,
     "geometry": "",
     "catch_links": "",            # the Catch tab's links box, kept between sessions
+    "columns": {},                # list column widths you dragged
+    "ask_deps": True,             # ask whether to catch the mods a mod needs
+    "cleanup_limit_mb": 250,      # offer to clear cached pictures and pages above this size
+    "role_overrides": {},         # {mod folder: {.mod file: role id}} roles you set yourself
+    "lib_playset": "All mods",    # which playset the Library shows
+    "hidden_issues": {},          # {mod folder: [conflict signatures]} conflicts you've hidden
+    "seen_crashes": [],           # crash folders already opened in the Crashes tab
+    "crash_hunt": {},             # a culprit hunt in progress (Crashes tab)
 }
 # Kept as they are when the Settings window saves (they're changed elsewhere in the app).
 NOT_IN_SETTINGS_WINDOW = ("mod_dir", "workers", "game_versions", "ignored_mods", "tab", "show_log", "play_continue",
                           "play_debug", "mod_sort", "mod_sort_desc", "ws_sort", "ws_hide_installed", "ws_view",
-                          "panes", "welcome_done", "geometry", "catch_links")
+                          "panes", "welcome_done", "geometry", "catch_links", "columns", "role_overrides",
+                          "lib_playset", "hidden_issues", "seen_version", "seen_crashes", "crash_hunt")
 
 
 def load_settings():
@@ -134,6 +154,26 @@ def save_settings(cfg):
         pass
 
 
+def load_catch_list():
+    """{workshop id: title} in the order they were added."""
+    try:
+        with open(CATCH_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(x["id"]): str(x.get("title") or x["id"]) for x in data.get("items", []) if x.get("id")}
+    except Exception:
+        return {}
+
+
+def save_catch_list(items):
+    try:
+        tmp = CATCH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"items": [{"id": k, "title": v} for k, v in items.items()]}, f, indent=1)
+        os.replace(tmp, CATCH_FILE)
+    except Exception:
+        pass
+
+
 def steam_allowed(cfg, game):
     """Is Steam part of the download chain for this game? (switched on, and the game is owned there)"""
     return bool(cfg["enabled"].get("steam", True)) and cfg.get("steam_owned", {}).get(game) is not False
@@ -144,36 +184,62 @@ class Splash(ctk.CTkToplevel):
     """Shown once while the app starts: builds every tab, reads the mods, loads (or works out) the
     analysis, decodes the pictures and draws the lists, so the window opens ready to use."""
 
+    W, H, R = 480, 320, 22                    # design size and corner radius
+    PAPER = ("#fbf8f1", "#1f1c25")            # a warm sheet of paper (light) / dark vellum
+    EDGE = ("#d9ccb2", "#3b3446")
+
     def __init__(self, app):
-        super().__init__(app, fg_color=BORDER)
+        dark = ctk.get_appearance_mode() == "Dark"
+        edge = self.EDGE[1 if dark else 0]
+        # the corners outside the rounded sheet are made see-through (Windows): a colour one step off
+        # the edge colour, so the smoothed corner pixels blend into the edge and leave no fringe
+        key = "#%02x%02x%02x" % tuple(min(255, int(edge[i:i + 2], 16) + (1 if i == 1 else 0)) for i in (1, 3, 5))
+        super().__init__(app, fg_color=key)
         self.overrideredirect(True)
         try:
             self.attributes("-topmost", True)
         except tk.TclError:
             pass
-        w, h = 470, 300
-        self.geometry(f"{w}x{h}")
-        inner = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        rounded = True
         try:
-            self._logo = ctk_image(appicon.render(192), (84, 84))
-            ctk.CTkLabel(inner, text="", image=self._logo).pack(pady=(30, 8))
+            self.attributes("-transparentcolor", key)
+        except tk.TclError:                   # not on this system: a plain sheet with square corners
+            rounded = False
+            self.configure(fg_color=edge)
+        sheet = ctk.CTkFrame(self, fg_color=self.PAPER, corner_radius=self.R if rounded else 0,
+                             border_width=2, border_color=self.EDGE, bg_color=key if rounded else edge)
+        sheet.pack(fill="both", expand=True)
+        inner = ctk.CTkFrame(sheet, fg_color="transparent")          # centred on the sheet
+        inner.pack(expand=True, padx=self.R // 2 + 4, pady=self.R // 2 + 2)
+        try:
+            self._logo = ctk_image(appicon.render(256), (104, 104))
+            ctk.CTkLabel(inner, text="", image=self._logo).pack(pady=(0, 6))
         except Exception:
             pass
         ctk.CTkLabel(inner, text=APP_NAME, text_color=TEXT, font=font(18, "bold")).pack()
         ctk.CTkLabel(inner, text=f"version {APP_VERSION}  ·  by {AUTHOR}", text_color=MUTED,
                      font=font(11)).pack(pady=(2, 0))
-        self.bar = ctk.CTkProgressBar(inner, width=330, height=6, corner_radius=3, fg_color=CARD_HI,
+        ctk.CTkFrame(inner, fg_color=self.EDGE, height=1, width=300).pack(pady=(14, 0))   # a ruled line
+        self.bar = ctk.CTkProgressBar(inner, width=330, height=6, corner_radius=3, fg_color=self.EDGE,
                                       progress_color=ACCENT)
         self.bar.set(0)
-        self.bar.pack(pady=(24, 6))
+        self.bar.pack(pady=(14, 6))
         self.lbl = ctk.CTkLabel(inner, text="Starting...", text_color=MUTED, font=font(11))
         self.lbl.pack()
-        self.update_idletasks()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        rw, rh = self.winfo_width(), self.winfo_height()
-        self.geometry(f"+{max(0, (sw - rw) // 2)}+{max(0, (sh - rh) // 2 - 40)}")
+        self.center()
         self.update()
+
+    def center(self):
+        """In the middle of the screen, measured from the size it really gets (the display scale applied:
+        before it's drawn, Windows reports no size yet)."""
+        try:
+            k = ctk.ScalingTracker.get_window_scaling(self)
+        except Exception:
+            k = 1.0
+        w, h = round(self.W * k), round(self.H * k)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        x, y = max(0, (sw - w) // 2), max(0, (sh - h) // 2)
+        tk.Toplevel.geometry(self, f"{w}x{h}+{x}+{y}")     # real pixels: no second scaling
 
     def step(self, text, fraction):
         try:
@@ -182,6 +248,79 @@ class Splash(ctk.CTkToplevel):
             self.update()
         except tk.TclError:
             pass
+
+
+# ================================================================== required mods
+class DepsDialog(ctk.CTkToplevel):
+    """A mod needs other Workshop mods you don't have (or have in an older version): catch them too?"""
+
+    def __init__(self, app, ids, needed, on_choice):
+        super().__init__(app, fg_color=BG)
+        self.on_choice, self.done = on_choice, False
+        titles = [app.catch_list.get(i) or app.browse_title(i) for i in ids]
+        n = len(needed)
+        self.title(f"Required mods - {APP_NAME}")
+        fit_geometry(self, 580, 270 + 34 * min(n, 8), app)
+        self.minsize(480, 300)
+        self.transient(app)
+        appicon.apply(self, APP_DIR)
+        self.protocol("WM_DELETE_WINDOW", lambda: self._choose("cancel"))
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.pack(side="bottom", fill="x", padx=22, pady=(6, 18))       # first: always in view
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=22, pady=(20, 8))
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(body, text="", image=icon("chain", 30, ACCENT), width=48, height=48, corner_radius=24,
+                     fg_color=ACCENT_SOFT).grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 14))
+        who = f"\"{titles[0]}\"" if len(ids) == 1 and titles[0] else f"{len(ids)} mods you picked"
+        ctk.CTkLabel(body, text=f"{who} need{'s' if len(ids) == 1 else ''} {n} other mod{'s' if n != 1 else ''}",
+                     text_color=TEXT, font=font(16, "bold"), anchor="w", justify="left", wraplength=430
+                     ).grid(row=0, column=1, sticky="ew")
+        miss = sum(1 for x in needed if x[2] == "missing")
+        upd = n - miss
+        bits = ([f"{miss} you don't have"] if miss else []) + ([f"{upd} you have in an older version"] if upd else [])
+        ctk.CTkLabel(body, text=" and ".join(bits).capitalize() + ". Without them, the mod may not work.",
+                     text_color=MUTED, font=font(12), anchor="w", justify="left", wraplength=430
+                     ).grid(row=1, column=1, sticky="ew", pady=(2, 0))
+        box = ctk.CTkScrollableFrame(body, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER,
+                                     height=min(8, n) * 32 + 8)
+        box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
+        box.grid_columnconfigure(1, weight=1)
+        by_id = dict(zip(ids, titles))
+        for r, (rid, title, kind, by) in enumerate(needed):
+            col, soft = (ACCENT, ACCENT_SOFT) if kind == "update" else (WARN, WARN_SOFT)
+            ctk.CTkLabel(box, text="Update" if kind == "update" else "Missing", height=20, corner_radius=10,
+                         fg_color=soft, text_color=col, font=font(10, "bold"), padx=7
+                         ).grid(row=r, column=0, sticky="w", padx=(10, 8), pady=4)
+            parent = by_id.get(by, "")
+            ctk.CTkLabel(box, text=title + (f"   (for {parent})" if parent and len(ids) > 1 else ""),
+                         text_color=TEXT, font=font(12), anchor="w").grid(row=r, column=1, sticky="ew", pady=4)
+        button(foot, "Cancel", lambda: self._choose("cancel"), width=86, height=34).pack(side="left")
+        button(foot, f"Catch with the {n} needed", lambda: self._choose("with"), primary=True, height=34,
+               icon_name="download").pack(side="right")
+        button(foot, "Only what I picked", lambda: self._choose("only"), height=34).pack(side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda e: self._choose("cancel"))
+        self.bind("<Return>", lambda e: self._choose("with"))
+        self.after(120, self._grab)
+
+    def _grab(self):
+        try:
+            self.grab_set()
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _choose(self, choice):
+        if self.done:
+            return
+        self.done = True
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+        self.on_choice(choice)
 
 
 # ================================================================== first run
@@ -324,126 +463,317 @@ class WelcomeWindow(ctk.CTkToplevel):
 
 
 # ================================================================== settings window
+PROJECT_URL = "https://github.com/Adromedary/Adromedary-s-Paradoxical-Launcher"
+# swatches for the palette cards in Settings > Appearance (fixed: the running palette may be the other one)
+PALETTE_PREVIEW = [
+    ("Classic", "Cool greys and blue: calm and plain.",
+     ["#eceff5", "#ffffff", "#2563d9", "#13865a", "#b26a00", "#161b24"]),
+    ("Colorful", "Warm parchment and royal tones. Every tab has its own colour, with a heraldic ribbon under "
+                 "the top bar.", ["#ece2cf", "#fffaf1", "#7333a8", "#2458c9", "#1c8049", "#ad5f08", "#b8263a",
+                                  "#1e1727"]),
+]
+
+
+class _Nav:
+    """The Settings sidebar: get() / set(name) like a tab view (older names still work)."""
+    ALIASES = {"Downloads": "General", "Auto-sort": "Sorting"}
+
+    def __init__(self, win):
+        self.win = win
+
+    def get(self):
+        return self.win.current
+
+    def set(self, name):
+        self.win.show_section(self.ALIASES.get(name, name))
+
+
 class SettingsWindow(ctk.CTkToplevel):
-    def __init__(self, app):
+    SECTIONS = [("General", "settings"), ("Games", "play"), ("Sorting", "sparkle"), ("Download sites", "download"),
+                ("Accounts", "key"), ("Storage", "broom"), ("Appearance", "palette"), ("About", "crest")]
+
+    def __init__(self, app, tab=None):
         super().__init__(app, fg_color=BG)
         self.app = app
         self.title(f"Settings - {APP_NAME}")
-        fit_geometry(self, 800, 700, app)
-        self.minsize(680, 560)
+        fit_geometry(self, 940, 700, app)
+        self.minsize(760, 540)
         self.transient(app)
         appicon.apply(self, APP_DIR)
         self.cfg = json.loads(json.dumps(app.cfg))
         self.game = app.game()
         self.switch_vars = {}
-        tabs = ctk.CTkTabview(self, fg_color=CARD, segmented_button_fg_color=BORDER,
-                              segmented_button_selected_color=TAB_ON, segmented_button_selected_hover_color=TAB_ON_HI,
-                              segmented_button_unselected_color=CARD_HI, segmented_button_unselected_hover_color=BORDER,
-                              text_color=TEXT, corner_radius=12, border_width=1, border_color=BORDER)
-        tabs.pack(fill="both", expand=True, padx=12, pady=(8, 0))
-        for name in ("Download sites", "Accounts", "Downloads", "Games", "Appearance"):
-            tabs.add(name)
+        self.current = None
+        self.tabs = _Nav(self)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        nav = ctk.CTkFrame(self, fg_color=CARD_HI, corner_radius=0, width=214)
+        nav.grid(row=0, column=0, rowspan=2, sticky="ns")
+        nav.grid_propagate(False)
+        ctk.CTkLabel(nav, text="  Settings", text_color=TEXT, font=font(18, "bold"), anchor="w",
+                     image=icon("settings", 20), compound="left").pack(fill="x", padx=16, pady=(16, 12))
+        self.navbtn = {}
+        for name, ic in self.SECTIONS:
+            b = ctk.CTkButton(nav, text="  " + name, anchor="w", height=34, corner_radius=8, font=font(12),
+                              fg_color="transparent", hover_color=BORDER, text_color=TEXT, image=icon(ic, 16),
+                              compound="left", command=lambda n=name: self.show_section(n))
+            b.pack(fill="x", padx=8, pady=1)
+            self.navbtn[name] = b
+        ctk.CTkLabel(nav, text=f"{APP_SHORT} {APP_VERSION}", text_color=MUTED, font=font(10), anchor="w"
+                     ).pack(side="bottom", fill="x", padx=16, pady=12)
+        self.stack = ctk.CTkFrame(self, fg_color="transparent")
+        self.stack.grid(row=0, column=1, sticky="nsew", padx=(14, 14), pady=(10, 0))
+        self.stack.grid_columnconfigure(0, weight=1)
+        self.stack.grid_rowconfigure(0, weight=1)
+        self.pages = {}
 
-        # ---- download sites
-        t = ctk.CTkScrollableFrame(tabs.tab("Download sites"), fg_color="transparent")
-        t.pack(fill="both", expand=True)
-        t.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(t, text="Each mod tries these sites from top to bottom until one delivers it. Switch sites "
-                             "off to shorten the chain; at least one stays on.", text_color=MUTED, font=font(12),
-                     anchor="w", justify="left", wraplength=640).grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 6))
-        self.chain_box = ctk.CTkFrame(t, fg_color="transparent")
-        self.chain_box.grid(row=1, column=0, sticky="ew")
-        self.chain_box.grid_columnconfigure(0, weight=1)
-        self.warn = ctk.CTkLabel(t, text="", text_color=WARN, font=font(12, "bold"), anchor="w")
-        self.warn.grid(row=2, column=0, sticky="ew", padx=8)
-        button(t, "Reset to default order", self._reset, width=170, icon_name="undo").grid(
-            row=3, column=0, sticky="w", padx=8, pady=8)
-
-        # ---- accounts
-        a = tabs.tab("Accounts")
-        a.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(a, text="All optional. Without them those steps run anonymously or are skipped.",
-                     text_color=MUTED, font=font(12), anchor="w").grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 6))
-        self.steam_user = self._field(a, 1, "Steam account name", self.cfg["steam_user"],
-                                      "Your login name (not your e-mail), for games you own on Steam. SteamCMD asks "
-                                      "for the password in its own window.")
-        self.modio_key = self._field(a, 2, "mod.io API key", self.cfg["modio_key"],
-                                     "Free: mod.io > your account > API access. mod.io is skipped without it.", secret=True)
-        self.github_token = self._field(a, 3, "GitHub token", self.cfg["github_token"],
-                                        "Optional. Raises GitHub's search limit from 10 to 30 a minute.", secret=True)
-
-        # ---- downloads
-        d = tabs.tab("Downloads")
-        d.grid_columnconfigure(0, weight=1)
-        self.other_dir = self._field(d, 0, "Other games' mods", self.cfg["other_dir"],
+        # ---- general
+        g0 = self._section("General", "How downloads and new mods are handled.")
+        d = self._group(g0, "Downloads")
+        self.other_dir = self._field(d, 1, "Other games' mods", self.cfg["other_dir"],
                                      "Mods for a different game than the chosen one are saved here.", browse=True)
         self.skip = ctk.BooleanVar(value=self.cfg["skip_existing"])
-        self._switch(d, 1, "Skip mods that are already installed (also copies Steam installed for you)", self.skip)
+        self._switch(d, 2, "Skip mods that are already installed (also copies Steam installed for you)", self.skip)
         self.add_new = ctk.BooleanVar(value=self.cfg.get("add_new_to_playset", True))
-        self._switch(d, 2, "Add newly downloaded mods to the active playset", self.add_new)
+        self._switch(d, 3, "Add newly downloaded mods to the active playset", self.add_new)
+        self.ask_deps = ctk.BooleanVar(value=self.cfg.get("ask_deps", True))
+        self._switch(d, 4, "When a mod needs other Workshop mods I don't have, ask whether to catch them too",
+                     self.ask_deps)
         has_view = BrowserBridge.available()
         self.check = ctk.BooleanVar(value=self.cfg["check_window"] and has_view)
-        self._switch(d, 3, "When a site shows a 'verify you are human' check, open it in a window so I can tick it",
+        self._switch(d, 5, "When a site shows a 'verify you are human' check, open it in a window so I can tick it",
                      self.check, enabled=has_view)
-        ctk.CTkLabel(d, text=("You tick the box yourself; the app never does it for you. Without this, a site "
-                              "showing the check is skipped for that run." if has_view else
-                              "Unavailable: the pywebview package is missing. Rebuild with build.bat."),
-                     text_color=MUTED, font=font(10), anchor="w", justify="left", wraplength=600
-                     ).grid(row=4, column=0, sticky="w", padx=58, pady=(0, 6))
+        self._note(d, 6, "You tick the box yourself; the app never does it for you. Without this, a site showing "
+                         "the check is skipped for that run." if has_view else
+                         "Unavailable: the pywebview package is missing. Rebuild with build.bat.", indent=58)
 
         # ---- games
-        g = ctk.CTkScrollableFrame(tabs.tab("Games"), fg_color="transparent")
-        g.pack(fill="both", expand=True)
-        g.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(g, text="For each game: where it's installed (Play starts it from there, and the analysis "
-                             "compares mods with the game's own files) and whether you own it on Steam (Steam only "
-                             "gives Workshop files to owners; otherwise it's skipped for that game).",
-                     text_color=MUTED, font=font(12), anchor="w", justify="left", wraplength=660
-                     ).grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 6))
+        gs = self._section("Games", "For each game: where it's installed (Play starts it from there, and the "
+                                    "conflict check compares mods with the game's own files) and whether you own it "
+                                    "on Steam (Steam only gives Workshop files to owners).")
         self.game_vars, self.owned_vars = {}, {}
         games = [n for n, _ in installer.detect_mod_dirs()]
         if app.game() and app.game() not in games:
             games.append(app.game())
-        row = 1
         for game in dict.fromkeys(games + list(self.cfg.get("game_dirs", {}))):
             if not game:
                 continue
-            box = ctk.CTkFrame(g, fg_color=CARD_HI, corner_radius=10, border_width=1, border_color=BORDER)
-            box.grid(row=row, column=0, sticky="ew", padx=6, pady=4)
-            box.grid_columnconfigure(0, weight=1)
-            row += 1
-            ctk.CTkLabel(box, text=game, text_color=TEXT, font=font(13, "bold"), anchor="w"
-                         ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 0))
+            box = self._group(gs, game)
             cur = self.cfg.get("game_dirs", {}).get(game, "") or app.found_install(game)
             self.game_vars[game] = self._field(box, 1, "Install folder", cur, "", browse=True, find=game)
             var = ctk.BooleanVar(value=self.cfg.get("steam_owned", {}).get(game) is not False)
             self.owned_vars[game] = var
             ctk.CTkSwitch(box, text="I own it on Steam", variable=var, progress_color=ACCENT, text_color=TEXT,
-                          font=font(12), command=self._draw_chain).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 8))
+                          font=font(12), command=self._draw_chain).grid(row=2, column=0, sticky="w", padx=12,
+                                                                         pady=(2, 10))
+
+        # ---- sorting and conflicts
+        so = self._section("Sorting", "How Auto-sort decides, and the conflicts you've hidden.")
+        a = self._group(so, "Auto-sort")
         self.hints = ctk.BooleanVar(value=self.cfg.get("workshop_hints", True))
-        self._switch(g, 90, "Auto-sort reads the mods' Workshop pages for notes like \"load after X\"", self.hints)
+        self._switch(a, 1, "Read the mods' Workshop pages for notes like \"load after X\"", self.hints)
+        self.older = ctk.BooleanVar(value=self.cfg.get("older_first", False))
+        self._switch(a, 2, "Mods made for older game versions load first (so newer ones win the files they share)",
+                     self.older)
+        self._note(a, 3, "Off by default: a mod made for an older version isn't always worse. Your own rules always "
+                         "come first.", indent=58)
+        c = self._group(so, "Conflicts")
+        n_hidden = sum(len(v) for v in self.cfg.get("hidden_issues", {}).values())
+        self.hidden_lbl = ctk.CTkLabel(c, text=f"{n_hidden} conflict{'s' if n_hidden != 1 else ''} hidden",
+                                       text_color=TEXT, font=font(12), anchor="w")
+        self.hidden_lbl.grid(row=1, column=0, sticky="w", padx=12, pady=(2, 4))
+        self.unhide_btn = button(c, "Show them all again", self._unhide_all, icon_name="undo", width=170,
+                                 state="normal" if n_hidden else "disabled")
+        self.unhide_btn.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 12))
+
+        # ---- download sites
+        t = self._section("Download sites", "Each mod tries these sites from top to bottom until one delivers "
+                                            "it. Switch sites off to shorten the chain; at least one stays on.")
+        self.chain_box = ctk.CTkFrame(t, fg_color="transparent")
+        self.chain_box.grid(row=2, column=0, sticky="ew")
+        self.chain_box.grid_columnconfigure(0, weight=1)
+        self.warn = ctk.CTkLabel(t, text="", text_color=WARN, font=font(12, "bold"), anchor="w")
+        self.warn.grid(row=3, column=0, sticky="ew", padx=8)
+        button(t, "Reset to default order", self._reset, width=170, icon_name="undo").grid(
+            row=4, column=0, sticky="w", padx=4, pady=8)
+
+        # ---- accounts
+        ac = self._section("Accounts", "All optional. Without them those steps run anonymously or are skipped.")
+        acc = self._group(ac, "Sign-ins and keys")
+        self.steam_user = self._field(acc, 1, "Steam account name", self.cfg["steam_user"],
+                                      "Your login name (not your e-mail), for games you own on Steam. SteamCMD asks "
+                                      "for the password in its own window.")
+        self.modio_key = self._field(acc, 2, "mod.io API key", self.cfg["modio_key"],
+                                     "Free: mod.io > your account > API access. mod.io is skipped without it.",
+                                     secret=True)
+        self.github_token = self._field(acc, 3, "GitHub token", self.cfg["github_token"],
+                                        "Optional. Raises GitHub's search limit from 10 to 30 a minute.", secret=True)
+
+        # ---- storage
+        st = self._section("Storage", "The app keeps pictures, screenshots and Workshop pages so they show up fast. "
+                                      "They come back by themselves when needed, so clearing them loses nothing. "
+                                      "Your mods, playsets, unfinished downloads, backups and the saved mod check "
+                                      "are never touched.")
+        lim = self._group(st, "Offer to clear them above")
+        cur_mb = int(self.cfg.get("cleanup_limit_mb", ST.DEFAULT_LIMIT_MB))
+        steps = ST.LIMITS_MB
+        idx = min(range(len(steps)), key=lambda i: abs(steps[i] - cur_mb))
+        row = ctk.CTkFrame(lim, fg_color="transparent")
+        row.grid(row=1, column=0, sticky="ew", padx=12)
+        row.grid_columnconfigure(1, weight=1)
+        self.limit_lbl = ctk.CTkLabel(row, text=ST.label_mb(steps[idx]), text_color=ACCENT, font=font(14, "bold"),
+                                      width=80, anchor="w")
+        self.limit_lbl.grid(row=0, column=0, sticky="w")
+        self.limit = ctk.CTkSlider(row, from_=0, to=len(steps) - 1, number_of_steps=len(steps) - 1,
+                                   button_color=ACCENT, button_hover_color=ACCENT_HI, progress_color=ACCENT,
+                                   command=lambda v: self.limit_lbl.configure(text=ST.label_mb(steps[int(round(v))])))
+        self.limit.set(idx)
+        self.limit.grid(row=0, column=1, sticky="ew")
+        self._note(lim, 2, "100 MB to 10 GB. Checked each time the app starts.")
+        now = self._group(st, "Right now")
+        now.grid_columnconfigure(1, weight=0)
+        self.usage = ctk.CTkLabel(now, text="Measuring...", text_color=TEXT, font=font(12), anchor="w",
+                                  justify="left")
+        self.usage.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        self.clear_btn = button(now, "Clear now", self._clear_storage, icon_name="broom", height=32,
+                                state="disabled")
+        self.clear_btn.grid(row=1, column=1, padx=12, pady=(0, 12))
+        self._cats = []
+        app.check_storage(on_done=self._measured)
 
         # ---- appearance
-        ap = tabs.tab("Appearance")
-        rowf = ctk.CTkFrame(ap, fg_color="transparent")
-        rowf.pack(anchor="w", padx=8, pady=8)
-        ctk.CTkLabel(rowf, text="Theme", text_color=TEXT, font=font(12), width=120, anchor="w").pack(side="left")
-        self.theme = ctk.CTkOptionMenu(rowf, values=THEMES, width=140, height=30, fg_color=CARD_HI,
-                                       button_color=CARD_HI, button_hover_color=BORDER, text_color=TEXT, font=font(12))
+        ap = self._section("Appearance", "Pick a palette, and light or dark.")
+        pg = self._group(ap, "Palette")
+        cards = ctk.CTkFrame(pg, fg_color="transparent")
+        cards.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 4))
+        self.palette = self.cfg.get("palette", "Classic")
+        self.pal_cards = {}
+        for i, (name, blurb, sw) in enumerate(PALETTE_PREVIEW):
+            card_ = ctk.CTkFrame(cards, fg_color=CARD, corner_radius=12, border_width=2, border_color=BORDER,
+                                 cursor="hand2")
+            card_.grid(row=0, column=i, padx=4, pady=4, sticky="n")
+            strip = ctk.CTkFrame(card_, fg_color="transparent")
+            strip.pack(anchor="w", padx=12, pady=(12, 6))
+            for col in sw:
+                ctk.CTkFrame(strip, width=26, height=26, corner_radius=6, fg_color=col, border_width=1,
+                             border_color=BORDER).pack(side="left", padx=(0, 4))
+            ctk.CTkLabel(card_, text=name, text_color=TEXT, font=font(13, "bold"), anchor="w").pack(anchor="w", padx=12)
+            ctk.CTkLabel(card_, text=blurb, text_color=MUTED, font=font(11), anchor="w", justify="left",
+                         wraplength=250).pack(anchor="w", padx=12, pady=(0, 12))
+            for w in [card_, strip] + list(card_.winfo_children()) + list(strip.winfo_children()):
+                w.bind("<Button-1>", lambda e, n=name: self._pick_palette(n), add="+")
+            self.pal_cards[name] = card_
+        self.pal_note = ctk.CTkLabel(pg, text="", text_color=WARN, font=font(11, "bold"), anchor="w")
+        self.pal_note.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 10))
+        self._pick_palette(self.palette)
+        mg = self._group(ap, "Light or dark")
+        self.theme = ctk.CTkSegmentedButton(mg, values=THEMES, font=font(12), selected_color=ACCENT,
+                                            selected_hover_color=ACCENT_HI, unselected_color=CARD_HI,
+                                            unselected_hover_color=BORDER, text_color=TEXT, fg_color=BORDER)
         self.theme.set(self.cfg.get("theme", "System"))
-        self.theme.pack(side="left")
-        ctk.CTkLabel(ap, text="System follows your Windows light/dark setting.", text_color=MUTED, font=font(10)
-                     ).pack(anchor="w", padx=8)
-        button(ap, "Reset panel sizes", self._reset_panes, width=150, icon_name="grid").pack(anchor="w", padx=8, pady=(18, 0))
-        ctk.CTkLabel(ap, text="The dividers between lists and their detail panels can be dragged; this puts them back.",
-                     text_color=MUTED, font=font(10)).pack(anchor="w", padx=8, pady=(2, 0))
+        self.theme.grid(row=1, column=0, sticky="w", padx=12)
+        self._note(mg, 2, "System follows your Windows light/dark setting. The moon button in the top bar "
+                          "switches too, with either palette.")
+        lg = self._group(ap, "Layout")
+        button(lg, "Reset panel sizes", self._reset_panes, width=150, icon_name="grid").grid(
+            row=1, column=0, sticky="w", padx=12)
+        self._note(lg, 2, "The dividers between lists and their detail panels can be dragged; this puts them back.")
+
+        # ---- about
+        ab = self._section("About", "")
+        box = self._group(ab, APP_NAME)
+        ctk.CTkLabel(box, text=f"Version {APP_VERSION}  ·  by {AUTHOR}", text_color=MUTED, font=font(12),
+                     anchor="w").grid(row=1, column=0, sticky="w", padx=12)
+        ctk.CTkLabel(box, text="Find, download and sort mods for Paradox games, see how they conflict, and play.",
+                     text_color=TEXT, font=font(12), anchor="w", justify="left", wraplength=560
+                     ).grid(row=2, column=0, sticky="w", padx=12, pady=(6, 8))
+        brow = ctk.CTkFrame(box, fg_color="transparent")
+        brow.grid(row=3, column=0, sticky="w", padx=12, pady=(0, 12))
+        button(brow, "What's new in 2.0", lambda: WhatsNewWindow(app), icon_name="star", width=170).pack(side="left")
+        button(brow, "Help", app._open_help, icon_name="help", width=90).pack(side="left", padx=8)
+        button(brow, "Open the app folder", lambda: open_folder(APP_DIR), icon_name="folder", width=170
+               ).pack(side="left")
+        button(brow, "Project page", lambda: webbrowser.open(PROJECT_URL), icon_name="external", width=140
+               ).pack(side="left", padx=8)
 
         foot = ctk.CTkFrame(self, fg_color="transparent")
-        foot.pack(fill="x", padx=14, pady=10)
+        foot.grid(row=1, column=1, sticky="ew", padx=14, pady=10)
         button(foot, "Save", self._save, primary=True, width=110, height=34, icon_name="check").pack(side="right")
         button(foot, "Cancel", self.destroy, width=90, height=34).pack(side="right", padx=8)
         self._draw_chain()
+        self.show_section(_Nav.ALIASES.get(tab, tab) if tab else "General")
         self.after(150, self._grab)
+
+    # ---- layout helpers
+    def _section(self, name, sub):
+        page = ctk.CTkScrollableFrame(self.stack, fg_color="transparent")
+        page.grid(row=0, column=0, sticky="nsew")
+        page.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(page, text=name, text_color=TEXT, font=font(20, "bold"), anchor="w"
+                     ).grid(row=0, column=0, sticky="w", padx=4, pady=(6, 0))
+        if sub:
+            ctk.CTkLabel(page, text=sub, text_color=MUTED, font=font(12), anchor="w", justify="left",
+                         wraplength=620).grid(row=1, column=0, sticky="ew", padx=4, pady=(2, 8))
+        page._next = 2
+        self.pages[name] = page
+        return page
+
+    def _group(self, page, title):
+        box = ctk.CTkFrame(page, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER)
+        box.grid(row=page._next + 10, column=0, sticky="ew", padx=2, pady=5)
+        page._next += 1
+        box.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(box, text=title, text_color=TEXT, font=font(13, "bold"), anchor="w"
+                     ).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=(10, 4))
+        return box
+
+    def _note(self, parent, row, text, indent=12):
+        ctk.CTkLabel(parent, text=text, text_color=MUTED, font=font(10), anchor="w", justify="left",
+                     wraplength=560).grid(row=row, column=0, sticky="w", padx=(indent, 12), pady=(0, 10))
+
+    def show_section(self, name):
+        if name not in self.pages:
+            return
+        self.current = name
+        page = self.pages[name]
+        getattr(page, "_parent_frame", page).tkraise()       # a scrollable frame lives inside an outer frame
+        for n, b in self.navbtn.items():
+            b.configure(fg_color=ACCENT_SOFT if n == name else "transparent",
+                        text_color=ACCENT if n == name else TEXT, font=font(12, "bold" if n == name else "normal"))
+
+    def _pick_palette(self, name):
+        self.palette = name
+        for n, c in self.pal_cards.items():
+            c.configure(border_color=ACCENT if n == name else BORDER)
+        self.pal_note.configure(text="" if name == PALETTE else "Takes effect when the app restarts (it offers to "
+                                                                 "restart when you save).")
+
+    def _unhide_all(self):
+        self.app.cfg["hidden_issues"] = {}
+        self.cfg["hidden_issues"] = {}
+        self.app.save()
+        self.app.conflicts.render()
+        self.app._tab_info()
+        self.hidden_lbl.configure(text="0 conflicts hidden")
+        self.unhide_btn.configure(state="disabled")
+
+    def _measured(self, cats):
+        if not self.winfo_exists():
+            return
+        self._cats = cats
+        if not cats:
+            self.usage.configure(text="Nothing cached right now.")
+            self.clear_btn.configure(state="disabled")
+            return
+        lines = [f"{ST.human(ST.total(cats))} in cached files"] + [f"   {what}: {ST.human(n)}" for _, what, _, n in cats]
+        self.usage.configure(text="\n".join(lines))
+        self.clear_btn.configure(state="normal")
+
+    def _clear_storage(self):
+        if self._cats:
+            self.clear_btn.configure(state="disabled")
+            self.usage.configure(text="Clearing...")
+            self.app.clear_storage(self._cats, on_done=lambda freed: self.app.check_storage(on_done=self._measured))
 
     def _grab(self):
         try:
@@ -455,11 +785,11 @@ class SettingsWindow(ctk.CTkToplevel):
     def _switch(self, parent, row, text, var, enabled=True):
         ctk.CTkSwitch(parent, text=text, variable=var, progress_color=ACCENT, text_color=TEXT if enabled else MUTED,
                       font=font(12), state="normal" if enabled else "disabled"
-                      ).grid(row=row, column=0, sticky="w", padx=8, pady=6)
+                      ).grid(row=row, column=0, sticky="w", padx=12, pady=5)
 
     def _field(self, parent, row, label, value, hint, secret=False, browse=False, find=None):
         box = ctk.CTkFrame(parent, fg_color="transparent")
-        box.grid(row=row, column=0, sticky="ew", padx=8, pady=5)
+        box.grid(row=row, column=0, sticky="ew", padx=12, pady=5)
         box.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(box, text=label, text_color=TEXT, font=font(12), width=150, anchor="w", justify="left",
                      wraplength=145).grid(row=0, column=0, sticky="w")
@@ -527,7 +857,7 @@ class SettingsWindow(ctk.CTkToplevel):
             blurb = src.blurb
             if key == "steam" and self.game:
                 blurb += (f"  On for {self.game}: you own it on Steam." if on else
-                          f"  Off for {self.game}: you said you don't own it on Steam (Games tab)."
+                          f"  Off for {self.game}: you said you don't own it on Steam (Games)."
                           if self.cfg["enabled"].get("steam", True) else "")
             ctk.CTkLabel(row, text=blurb, text_color=MUTED, font=font(11), anchor="w", justify="left",
                          wraplength=470).grid(row=1, column=2, sticky="ew", pady=(0, 8))
@@ -592,12 +922,74 @@ class SettingsWindow(ctk.CTkToplevel):
             return
         self.cfg.update(steam_user=self.steam_user.get().strip(), modio_key=self.modio_key.get().strip(),
                         github_token=self.github_token.get().strip(), skip_existing=bool(self.skip.get()),
-                        check_window=bool(self.check.get()), theme=self.theme.get(),
+                        check_window=bool(self.check.get()), theme=self.theme.get(), palette=self.palette,
                         other_dir=self.other_dir.get().strip() or DEFAULTS["other_dir"],
                         add_new_to_playset=bool(self.add_new.get()), workshop_hints=bool(self.hints.get()),
-                        game_dirs=dirs, steam_owned=owned)
+                        older_first=bool(self.older.get()), game_dirs=dirs, steam_owned=owned, ask_deps=bool(self.ask_deps.get()),
+                        cleanup_limit_mb=ST.LIMITS_MB[int(round(self.limit.get()))])
         self.app.apply_settings(self.cfg)
         self.destroy()
+        if self.palette != PALETTE:
+            self.app.after(100, self.app.offer_restart)
+
+
+# ================================================================== what's new
+class WhatsNewWindow(ctk.CTkToplevel):
+    """What changed in this version, shown once after updating (and from Settings > About)."""
+
+    def __init__(self, app):
+        super().__init__(app, fg_color=BG)
+        self.app = app
+        self.title(f"What's new - {APP_NAME}")
+        fit_geometry(self, 760, 680, app)
+        self.minsize(560, 420)
+        self.transient(app)
+        appicon.apply(self, APP_DIR)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        head = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
+        head.grid(row=0, column=0, sticky="ew")
+        try:
+            self._logo = ctk_image(appicon.render(96), (44, 44))
+            ctk.CTkLabel(head, text="", image=self._logo).pack(side="left", padx=(20, 12), pady=14)
+        except Exception:
+            pass
+        txt = ctk.CTkFrame(head, fg_color="transparent")
+        txt.pack(side="left", pady=14)
+        ctk.CTkLabel(txt, text=f"What's new in {APP_VERSION}", text_color=TEXT, font=font(22, "bold"), anchor="w"
+                     ).pack(anchor="w")
+        ctk.CTkLabel(txt, text=HT.WHATS_NEW_INTRO, text_color=MUTED, font=font(12), anchor="w", justify="left",
+                     wraplength=560).pack(anchor="w")
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(10, 0))
+        body.grid_columnconfigure(0, weight=1)
+        for r, (title, ic, lines) in enumerate(HT.WHATS_NEW):
+            strong = TAB_COLORS[title][0] if (COLORFUL and title in TAB_COLORS) else ACCENT
+            c = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER)
+            c.grid(row=r, column=0, sticky="ew", padx=4, pady=5)
+            c.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(c, text="  " + title, image=icon(ic, 18, strong), compound="left", text_color=TEXT,
+                         font=font(14, "bold"), anchor="w").grid(row=0, column=0, columnspan=2, sticky="w",
+                                                                 padx=12, pady=(10, 4))
+            for n, line in enumerate(lines, 1):
+                ctk.CTkLabel(c, text="•", text_color=strong, font=font(15, "bold"), width=18, height=20, anchor="n"
+                             ).grid(row=n, column=0, sticky="n", padx=(16, 4), pady=1)
+                ctk.CTkLabel(c, text=line, text_color=TEXT, font=font(12), anchor="w", justify="left",
+                             wraplength=600).grid(row=n, column=1, sticky="w", padx=(0, 12),
+                                                  pady=(1, 10 if n == len(lines) else 1))
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.grid(row=2, column=0, sticky="ew", padx=16, pady=10)
+        button(foot, "Close", self.destroy, primary=True, width=100, height=34).pack(side="right")
+        button(foot, "Open Help", lambda: (self.destroy(), app._open_help()), icon_name="help", width=120,
+               height=34).pack(side="right", padx=8)
+        if not COLORFUL:
+            button(foot, "Try the Colorful palette", self._try_colorful, icon_name="palette", width=200,
+                   height=34).pack(side="left")
+        self.after(100, self.lift)
+
+    def _try_colorful(self):
+        self.destroy()
+        self.app._open_settings("Appearance")
 
 
 # ================================================================== help window
@@ -621,11 +1013,15 @@ class HelpWindow(ctk.CTkToplevel):
         ctk.CTkLabel(nav, text=f"{APP_SHORT} {APP_VERSION}\nby {AUTHOR}", text_color=MUTED, font=font(11), anchor="w",
                      justify="left").pack(fill="x", padx=16, pady=(2, 10))
         self.navbtn = {}
+        # the topics scroll when the window is too short for all of them
+        topics = ctk.CTkScrollableFrame(nav, fg_color="transparent", corner_radius=0)
+        topics.pack(fill="both", expand=True, padx=(0, 2), pady=(0, 8))
+        self.topics = topics
         for title, _ in HT.TOPICS:
-            b = ctk.CTkButton(nav, text=title, anchor="w", height=30, corner_radius=8, font=font(12),
+            b = ctk.CTkButton(topics, text=title, anchor="w", height=30, corner_radius=8, font=font(12),
                               fg_color="transparent", hover_color=BORDER, text_color=TEXT,
                               command=lambda t=title: self.show(t))
-            b.pack(fill="x", padx=8, pady=1)
+            b.pack(fill="x", padx=(4, 2), pady=1)
             self.navbtn[title] = b
         self.body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.body.grid(row=0, column=1, sticky="nsew", padx=(8, 8), pady=(8, 0))
@@ -650,6 +1046,21 @@ class HelpWindow(ctk.CTkToplevel):
                 self.after_cancel(self._job)
             self._job = self.after(150, lambda: self.show(self.current, keep_scroll=True))
 
+    def _nav_into_view(self, title):
+        """Scroll the topic list so the open topic's button shows (Previous / Next, or opened at a topic)."""
+        try:
+            b = self.navbtn[title]
+            cv = self.topics._parent_canvas
+            total = max(1, b.master.winfo_height())
+            top, bot = cv.yview()
+            y0, y1 = b.winfo_y() / total, (b.winfo_y() + b.winfo_height()) / total
+            if y0 < top:
+                cv.yview_moveto(y0)
+            elif y1 > bot:
+                cv.yview_moveto(max(0.0, y1 - (bot - top)))
+        except Exception:
+            pass
+
     def step(self, d):
         names = [t for t, _ in HT.TOPICS]
         i = names.index(self.current) + d
@@ -661,6 +1072,7 @@ class HelpWindow(ctk.CTkToplevel):
         for t, b in self.navbtn.items():
             b.configure(fg_color=ACCENT if t == title else "transparent",
                         text_color=WHITE if t == title else TEXT)
+        self.after_idle(lambda: self._nav_into_view(title))
         for w in self.body.winfo_children():
             w.destroy()
         names = [t for t, _ in HT.TOPICS]
@@ -725,6 +1137,7 @@ class App(ctk.CTk):
         self.withdraw()                        # shown once everything is ready (the loading screen covers it)
         set_root(self)
         self.cfg = cfg
+        COLUMNS["cfg"], COLUMNS["save"] = cfg.setdefault("columns", {}), self.save   # dragged column widths
         self._prerender = False
         self.splash = Splash(self)
         self.splash.step("Preparing the interface...", 0.04)
@@ -752,8 +1165,10 @@ class App(ctk.CTk):
         self.analysis, self.analyzing, self.an_sig, self.an_token = None, False, None, 0
         self.an_progress = ""
         self._thumbs, self._wids, self._reg_cache = {}, None, None
-        self.catch_list = {}            # Browse tab: workshop id -> title, waiting to be caught
+        self.catch_list = load_catch_list()     # workshop id -> title, waiting to be caught (kept on disk)
+        self.dep_check = set()          # workshop ids whose required mods are being looked up
         self.thumbs_dir = os.path.join(WORK_DIR, "thumbs")
+        self.shots_dir = os.path.join(WORK_DIR, "shots")        # full-size screenshots (picture viewer)
         self._installs = {}
         self._last_error = 0
         self._browse_dirty_status = False
@@ -769,6 +1184,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Configure>", self._on_configure, add="+")
         self.after(100, self._drain)
+        self._first_run = not self.cfg.get("welcome_done")
         if self.cfg.get("welcome_done"):
             self.after(30, self._boot)
         else:
@@ -782,14 +1198,19 @@ class App(ctk.CTk):
         appbar = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0)
         appbar.grid(row=0, column=0, sticky="ew")
         appbar.grid_columnconfigure(0, weight=1)
-        ctk.CTkFrame(self, fg_color=SHADOW, height=1, corner_radius=0).grid(row=1, column=0, sticky="ew")
+        if COLORFUL:
+            self.ribbon = Ribbon(self)
+            self.ribbon.grid(row=1, column=0, sticky="ew")
+        else:
+            self.ribbon = None
+            ctk.CTkFrame(self, fg_color=SHADOW, height=1, corner_radius=0).grid(row=1, column=0, sticky="ew")
         head = ctk.CTkFrame(appbar, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 0))
         head.grid_columnconfigure(1, weight=1)
         brand = ctk.CTkFrame(head, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="w")
         try:
-            self._logo = ctk_image(appicon.render(96), (34, 34))
+            self._logo = ctk_image(appicon.render(128), (40, 40))
             ctk.CTkLabel(brand, text="", image=self._logo).pack(side="left", padx=(0, 8))
         except Exception:
             pass
@@ -842,14 +1263,27 @@ class App(ctk.CTk):
         self.play_more.grid(row=0, column=7, padx=(2, 12))
         Tooltip(self.play_btn, "Start the game with this playset")
         Tooltip(self.play_more, "More: continue the last save, debug mode, open folders and the error log")
+        # tools that work from every tab: look through the mod folder again, ask the Workshop for updates
+        self.tools = {}
+        for col, (name, ic, tint, soft, tip, cmd) in enumerate((
+                ("scan", "scan", TEAL, TEAL_SOFT, "Rescan: read the mod folder again (new, changed or removed "
+                                                  "mods)", self.rescan),
+                ("updates", "update", ACCENT, ACCENT_SOFT, "Check updates: ask the Workshop which of your mods "
+                                                           "have a newer version", self.check_updates))):
+            b = ctk.CTkButton(ctl, text="", width=34, height=32, corner_radius=9, fg_color=soft, hover_color=BORDER,
+                              border_width=0, image=icon(ic, 17, tint), command=cmd)
+            b.grid(row=0, column=8 + col, padx=(0, 4))
+            Tooltip(b, tip)
+            self.tools[name] = (b, ic, tint, soft)
+        ctk.CTkFrame(ctl, width=1, height=22, fg_color=BORDER).grid(row=0, column=10, padx=(4, 8))
         self.theme_btn = button(ctl, "", self._toggle_theme, width=34, height=32, icon_name="moon",
                                 tip="Light / dark look")
-        self.theme_btn.grid(row=0, column=8, padx=(0, 4))
+        self.theme_btn.grid(row=0, column=11, padx=(0, 4))
         button(ctl, "", self._open_help, width=34, height=32, icon_name="help",
-               tip="Help: how every part of the app works").grid(row=0, column=9, padx=(0, 4))
+               tip="Help: how every part of the app works").grid(row=0, column=12, padx=(0, 4))
         self.settings_btn = button(ctl, "Settings", self._open_settings, width=104, height=32, icon_name="settings",
                                    tip="Settings: download sites, accounts, games, look")
-        self.settings_btn.grid(row=0, column=10)
+        self.settings_btn.grid(row=0, column=13)
 
         bar = ctk.CTkFrame(appbar, fg_color="transparent")
         bar.grid(row=1, column=0, sticky="ew", padx=12, pady=(8, 0))
@@ -880,8 +1314,9 @@ class App(ctk.CTk):
         self.playsets = PlaysetsPage(body, self)
         self.splash.step("Building the Conflicts tab...", 0.20)
         self.conflicts = ConflictsPage(body, self)
+        self.crashes = CrashPage(body, self)
         self.pages = {"Browse": self.browse, "Catch": self.catch, "Library": self.library, "Playsets": self.playsets,
-                      "Conflicts": self.conflicts}
+                      "Conflicts": self.conflicts, "Crashes": self.crashes}
         for p in self.pages.values():
             p.grid(row=0, column=0, sticky="nsew")
 
@@ -942,6 +1377,8 @@ class App(ctk.CTk):
 
     def show_tab(self, name):
         self.tabs.set(name)
+        if self.ribbon is not None:
+            self.ribbon.set_tab(name)
         page = self.pages[name]
         page.tkraise()
         if hasattr(page, "on_show"):
@@ -952,15 +1389,29 @@ class App(ctk.CTk):
 
     def _restyle(self):
         style_trees(self)
-        for t in (self.catch.queue, self.library.table, self.playsets.order, self.playsets.extra, self.playsets.plist,
-                  self.conflicts.table):
+        for t in (self.catch.queue, self.catch.clist, self.library.table, self.playsets.order, self.playsets.extra,
+                  self.playsets.plist, self.conflicts.table):
             t.restyle()
         for s in Split.instances:
             s.restyle()
-        for page in (self.library, self.playsets, self.conflicts):
+        for page in (self.library, self.playsets):
             page.dp.restyle()
+        self.conflicts.dp.restyle()
+        self.crashes.restyle()
         self.browse.restyle()
         self._theme_label()
+
+    def tool_busy(self, name, busy):
+        """A top-bar tool is working (or can't run right now): it greys out until it's free again."""
+        b, ic, tint, soft = self.tools[name]
+        b.configure(state="disabled" if busy else "normal", fg_color=MUTED_SOFT if busy else soft,
+                    image=icon(ic, 17, FAINT if busy else tint))
+
+    def check_updates(self):
+        if not self.mods:
+            self.toast("No mods to check yet.", color=MUTED)
+            return
+        self.library.check_updates()
 
     # ================================================================ errors never stop the app
     def _tk_error(self, exc, val, tb):
@@ -1026,12 +1477,207 @@ class App(ctk.CTk):
         en["steam"] = self.steam_ok()
         return en
 
-    # ---- catching from other tabs
-    def catch_ids(self, ids, show_catch=False):
-        """Download these Workshop IDs now, or right after the current run."""
+    # ---- the catch list (Browse adds to it; the Catch tab shows it)
+    def catch_list_changed(self):
+        save_catch_list(self.catch_list)
+        self.browse._render_list()
+        self.browse.refresh_status()
+        self.catch.render_list()
+
+    def add_to_catch_list(self, items):
+        """items: {workshop id: title}"""
+        for wid, title in items.items():
+            self.catch_list[wid] = title
+        self.catch_list_changed()
+
+    def add_links_to_list(self, ids):
+        """Workshop links (mods or collections) go to the catch list, not straight to downloading. A
+        collection is opened up into its mods; names come from Steam in the background."""
         ids = [i for i in dict.fromkeys(ids) if i]
         if not ids:
             return
+        for wid in ids:
+            self.catch_list.setdefault(wid, self.catch_list.get(wid) or self.browse_title(wid) or f"Workshop item {wid}")
+        self.dep_check |= set(ids)
+        self.catch_list_changed()
+        self.toast(f"Added {len(ids)} link{'s' if len(ids) != 1 else ''} to the catch list. Press Download all "
+                   "when you're ready.", color=ACCENT)
+
+        def work():
+            import net as N
+            names, kids = {}, {}
+            try:
+                net = N.Net()
+                kids = S.steam_collection_children(net, ids)
+                every = list(ids) + [c for cs in kids.values() for c in cs]
+                names = {k: (d.get("title") or "") for k, d in S.steam_details(net, every).items()}
+            except Exception:
+                pass
+            self.q.put(("links_resolved", ids, names, kids))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _links_resolved(self, ids, names, kids):
+        self.dep_check -= set(ids)
+        for wid in ids:
+            if wid not in self.catch_list:
+                continue                               # removed meanwhile
+            if kids.get(wid):                          # a collection: its mods take its place
+                self.catch_list.pop(wid, None)
+                for c in kids[wid]:
+                    self.catch_list.setdefault(c, names.get(c) or f"Workshop item {c}")
+                self.log(f"Collection \"{names.get(wid) or wid}\": {len(kids[wid])} mods added to the catch list.")
+            elif names.get(wid):
+                self.catch_list[wid] = names[wid]
+        self.catch_list_changed()
+
+    def update_jobs_for(self, ids):
+        """{workshop id: old copies} for the ids that are installed and have a newer version: those are
+        updates, not mods to skip because they're already there."""
+        reg = self.registry()
+        jobs = {}
+        want = set(ids)
+        for m in self.mods:
+            if not self.updates.get(m.key, {}).get("update"):
+                continue
+            wid = self.updates.get(m.key, {}).get("id") or U.workshop_id(m, reg)
+            if wid in want:
+                jobs.setdefault(wid, [])
+        for wid in jobs:
+            jobs[wid] = [{"modfile": o.modfile, "folder": o.folder} for o in self.mods if U.workshop_id(o, reg) == wid]
+        return jobs
+
+    def remove_from_catch_list(self, ids):
+        for wid in ids:
+            self.catch_list.pop(wid, None)
+        self.catch_list_changed()
+
+    def catch_from_list(self, ids=None):
+        """Download mods from the catch list (all of them by default). They stay listed until installed."""
+        ids = [i for i in (ids or list(self.catch_list)) if not self.list_state(i)[0].startswith("↓")]
+        if ids:
+            self.catch_ids(ids)
+
+    def list_state(self, wid):
+        """(status text, tree tag) of a catch-list mod."""
+        if wid in self.dep_check:
+            return "Checking...", "muted"
+        st = self.dl_state.get(wid)
+        if st and st[0] == "Working":
+            return (f"↓ {int(st[1] * 100)}%" if st[1] is not None else "↓ Working"), "update"
+        if st and st[0] == "Queued":
+            return "↓ Queued", "update"
+        if wid in self.up_next:
+            return "↓ Up next", "update"
+        if st and st[0] in ("Not found", "Interrupted", "Stopped"):
+            return {"Not found": "✗ Not found", "Interrupted": "✗ Failed", "Stopped": "Stopped"}[st[0]], "missing"
+        if st and st[0] == "Paused":
+            return "Paused", "conflict"
+        return "Waiting", ""
+
+    def browse_title(self, wid):
+        it = self.browse.items.get(wid)
+        return it.title if it else ""
+
+    def retry_ids(self, ids):
+        """Try downloads that didn't work again (nothing asked: they were chosen already)."""
+        self.catch_ids(ids, deps=False)
+
+    # ---- catching from other tabs
+    def catch_ids(self, ids, show_catch=False, deps=True):
+        """Download these Workshop IDs now, or right after the current run. First, when a mod needs other
+        Workshop mods you don't have (or have in an older version), you're asked whether to catch them too."""
+        ids = [i for i in dict.fromkeys(ids) if i]
+        if not ids:
+            return
+        if deps and self.cfg.get("ask_deps", True):
+            self._check_deps(ids, show_catch)
+            return
+        self._catch_now(ids, show_catch)
+
+    def _check_deps(self, ids, show_catch):
+        token = getattr(self, "_dep_token", 0) + 1
+        self._dep_token = token
+        self.dep_check |= set(ids)
+        self.catch.refresh_list()
+        have = dict(self.installed_wids())
+        reg = self.registry()
+        mine = {}
+        for wid, m in have.items():
+            mine[wid] = (reg.get(wid, {}) or {}).get("steam_updated") or int(m.installed_at or 0)
+
+        def work():
+            import net as N
+            import workshop as W
+            net = N.Net()
+            need, names, seen, frontier = {}, {}, set(ids), list(ids)
+            for _ in range(3):                         # mods needed by the needed mods, three levels deep
+                nxt = []
+                for wid in frontier:
+                    try:
+                        req = W.details(net, wid).required
+                    except Exception:
+                        req = []
+                    for rid, name in req:
+                        names[rid] = name
+                        if rid not in seen:
+                            seen.add(rid)
+                            nxt.append(rid)
+                            need.setdefault(rid, wid)
+                frontier = nxt
+                if not frontier:
+                    break
+            info = {}
+            if need:
+                try:
+                    info = S.steam_details(net, list(need))
+                except Exception:
+                    info = {}
+            out = []
+            for rid, by in need.items():
+                d = info.get(rid) or {}
+                title = d.get("title") or names.get(rid) or rid
+                if rid in have:
+                    upd = int(d.get("time_updated", 0) or 0)
+                    if upd and mine.get(rid) and upd > mine[rid] + U.SLACK:
+                        out.append((rid, title, "update", by))
+                else:
+                    out.append((rid, title, "missing", by))
+            self.q.put(("deps", token, ids, out, show_catch))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _deps_found(self, token, ids, needed, show_catch):
+        if token != getattr(self, "_dep_token", 0):
+            return
+        self.dep_check -= set(ids)
+        self.catch.refresh_list()
+        if not needed:
+            self._catch_now(ids, show_catch)
+            return
+        DepsDialog(self, ids, needed, lambda choice: self._deps_chosen(choice, ids, needed, show_catch))
+
+    def _deps_chosen(self, choice, ids, needed, show_catch):
+        if choice == "cancel":
+            return
+        if choice == "only":
+            self._catch_now(ids, show_catch)
+            return
+        missing = [rid for rid, _, kind, _ in needed if kind == "missing"]
+        updates = [rid for rid, _, kind, _ in needed if kind == "update"]
+        jobs = {}
+        if updates:
+            reg = self.registry()
+            for wid in updates:
+                jobs[wid] = [{"modfile": o.modfile, "folder": o.folder} for o in self.mods
+                             if U.workshop_id(o, reg) == wid]
+        self._catch_now(missing + list(ids) + updates, show_catch, update_jobs=jobs)
+
+    def _catch_now(self, ids, show_catch=False, update_jobs=None):
+        ids = [i for i in dict.fromkeys(ids) if i]
+        if not ids:
+            return
+        auto = self.update_jobs_for(ids)             # caught mods that need an update are updated, not skipped
+        if auto:
+            update_jobs = dict(auto, **(update_jobs or {}))
         if self.running():
             have = {it for it in self.dl_state if self.dl_state[it][0] in ("Queued", "Working")}
             new = [i for i in ids if i not in self.up_next and i not in have]
@@ -1059,7 +1705,54 @@ class App(ctk.CTk):
         else:
             self.toast(f"Catching {len(ids)} mod{'s' if len(ids) != 1 else ''}. Progress shows here and in the "
                        "Catch tab.", color=ACCENT)
+        if update_jobs and not resume:
+            self.update_run = update_jobs
+            self._launch(ids, {"force_ids": list(update_jobs), "replace": update_jobs})
+            return
         self._launch(ids, resume=resume)
+
+    def show_issue(self, issue):
+        """The Conflicts tab with this conflict selected."""
+        self.show_tab("Conflicts")
+        self.conflicts.focus_issue(issue)
+
+    def crash_note(self, key):
+        """(text, crash) when this mod is a likely or possible suspect of the newest crash, else None."""
+        r = self.crashes.latest_result() if hasattr(self, "crashes") else None
+        s = r.suspect(key) if r else None
+        if s is None or s.sure == "unlikely":
+            return None
+        when = time.strftime("%d %b %H:%M", time.localtime(r.crash.when))
+        return (f"{'A likely' if s.sure == 'likely' else 'A possible'} suspect in the crash of {when}: "
+                f"{s.reasons[0][1] if s.reasons else ''}", r.crash)
+
+    def show_crash_suspect(self, key):
+        self.show_tab("Crashes")
+        cp = self.crashes
+        if cp.crashes and cp.current is not cp.crashes[0]:
+            cp.show(cp.crashes[0])
+        t = cp.table.tree
+        rid = next((rid for rid, s in cp.by_row.items() if s.key == key), None)
+        if rid:
+            t.selection_set(rid)
+            t.see(rid)
+
+    def crash_badge(self):
+        cp = getattr(self, "crashes", None)
+        n = len(cp.unseen()) if cp is not None else 0
+        self.tabs.set_badge("Crashes", n or "", CRIT)
+
+    def _crash_banner(self):
+        cp = self.crashes
+        new = cp.unseen()
+        if not new or self.cfg.get("crash_hunt"):
+            return
+        c = new[0]
+        when = time.strftime("%d %b at %H:%M", time.localtime(c.when))
+        self.banner.show(f"The game crashed on {when}" + (f" ({len(new)} crashes you haven't looked at)"
+                                                          if len(new) > 1 else "") + ". See what likely caused it.",
+                         actions=[("Show the crash", lambda: (self.banner.hide("crash"), self.show_tab("Crashes"))),
+                                  ("Later", lambda: self.banner.hide("crash"))], kind="crash", tone="warn")
 
     def show_conflicts_for(self, key):
         self.show_tab("Conflicts")
@@ -1088,7 +1781,7 @@ class App(ctk.CTk):
         bits = [f"{len(mods)} mod{'s' if len(mods) != 1 else ''} installed"]
         if ps.name:
             bits.append(f"playset \"{ps.name}\": {len(ps.enabled_keys())} on")
-        c = A.summary(ps.issues) if self.analysis is not None and ps.name else None
+        c = A.summary(self.conflicts.counted_issues()) if self.analysis is not None and ps.name else None
         if c is not None:
             bad = [f"{n} {w}" for n, w in ((c["critical"], "critical"), (c["high"], "high")) if n]
             bits.append(f"{', '.join(bad)} conflict{'s' if sum((c['critical'], c['high'])) != 1 else ''}" if bad
@@ -1171,7 +1864,7 @@ class App(ctk.CTk):
                 self.q.put(("analysis", token, None, f"{type(e).__name__}: {e}"))
         threading.Thread(target=work, daemon=True).start()
 
-    ANALYSIS_CACHE_VERSION = 3
+    ANALYSIS_CACHE_VERSION = 6
 
     @staticmethod
     def _analysis_signature(mods, game_dir, meta, wids):
@@ -1191,7 +1884,8 @@ class App(ctk.CTk):
             h.update(f"|{m.key}|{m.folder}|{m.size}|{len(m.files)}|{m.mtime}|{mf}".encode("utf-8", "replace"))
         for w in sorted(x for x in wids.values() if x):
             d = meta.get(w) or {}
-            h.update(f"|{w}|{d.get('title', '')}|{len(d.get('text', ''))}".encode("utf-8", "replace"))
+            h.update(f"|{w}|{d.get('title', '')}|{len(d.get('text', ''))}|{','.join(d.get('tags', []))}"
+                     .encode("utf-8", "replace"))
         return h.hexdigest()
 
     @staticmethod
@@ -1233,21 +1927,26 @@ class App(ctk.CTk):
             self._tab_info()
             return
         self.analysis = an
+        self.apply_role_overrides()
         self.log((f"Analysis of {len(an.facts)} mods loaded from the cache (nothing changed)"
                   if getattr(an, "from_cache", False) else f"Analysed {len(an.facts)} mods in {an.seconds:.1f}s")
                  + ("" if an.used_vanilla else " (game folder unknown: set it in Settings for a deeper check)") + ".")
         self.library.refresh_view()
         self.playsets.analysis_ready()
         self.conflicts_changed()
+        self.crashes.reanalyse()
 
     def _thumbs_ready(self):
         self._thumbs.clear()
         self.library.render()
         self.playsets.render_order()
 
-    def toast(self, msg, color=OK):
+    def toast(self, msg, color=OK, action=None):
         self.log(msg)
-        self.banner.show(msg, kind="toast", color=color)
+        if action:
+            self.banner.show(msg, kind="toast", color=color, actions=[action])
+        else:
+            self.banner.show(msg, kind="toast", color=color)
         self._toast_n = getattr(self, "_toast_n", 0) + 1
         n = self._toast_n
         self.after(6500, lambda: self.banner.hide("toast") if n == self._toast_n else None)
@@ -1309,6 +2008,63 @@ class App(ctk.CTk):
     def header_profiles(self, names, active):
         self.profile_menu.configure(values=names or ["-"])
         self.profile_menu.set(active or "-")
+        self.library.fill_playsets()
+        if self.library.pset_filter.get() != "All mods":
+            self.library.render()
+
+    # ---- roles you set yourself (Library > right-click > Role)
+    def role_overrides(self):
+        return self.cfg.setdefault("role_overrides", {}).setdefault(os.path.normcase(self.mod_dir()), {})
+
+    def apply_role_overrides(self):
+        an = self.analysis
+        if an is None:
+            return
+        import roles as R
+        ov = self.role_overrides()
+        for k, f in an.facts.items():
+            auto = getattr(f, "role_auto", None) or f.role
+            f.role_auto = auto
+            rid = ov.get(k)
+            if rid in R.BY_ID and auto is not None:
+                f.role = R.RoleResult(R.BY_ID[rid], "set by you", [x for x in auto.secondary if x.id != rid],
+                                      auto.focus, auto.attrs, auto.evidence, manual=True)
+            else:
+                f.role = auto
+
+    def set_role(self, keys, rid):
+        """rid: a role id, or None to go back to the automatic one."""
+        ov = self.role_overrides()
+        for k in keys:
+            if rid:
+                ov[k] = rid
+            else:
+                ov.pop(k, None)
+        self.save()
+        self.apply_role_overrides()
+        self.library.render()
+        self.playsets.render_all()
+        self.toast("Role set." if rid else "Back to the automatic role.", color=MUTED)
+
+    def launcher_playsets(self):
+        """The official Paradox launcher's playsets for this game (read-only, re-read when the file changes)."""
+        md = self.mod_dir()
+        db = os.path.join(LA.data_dir_of(md), "launcher-v2.sqlite") if md else ""
+        try:
+            mt = os.path.getmtime(db) if db else 0
+        except OSError:
+            mt = 0
+        if not mt:
+            return []
+        c = getattr(self, "_lp_cache", None)
+        if c and c[0] == (db, mt):
+            return c[1]
+        try:
+            got = LA.read_playsets(db)
+        except Exception:
+            got = []
+        self._lp_cache = ((db, mt), got)
+        return got
 
     def open_mod_dir(self):
         d = self.mod_dir() or self.cfg["other_dir"]
@@ -1410,6 +2166,7 @@ class App(ctk.CTk):
             self._tab_info()
             return
         self.library.summary.configure(text="Scanning...", text_color=MUTED)
+        self.tool_busy("scan", True)
         ignored = set(self.cfg.get("ignored_mods", {}).get(os.path.normcase(md), []))
 
         def work():
@@ -1424,6 +2181,7 @@ class App(ctk.CTk):
     def _scanned(self, token, md, mods, error):
         if token != self.scan_token or md != self.mod_dir():
             return
+        self.tool_busy("scan", False)
         first = not self.mods_loaded or getattr(self.playsets, "loaded_for", None) != md
         self.mods, self.mods_loaded, self.scan_error = mods, True, error
         self._thumbs.clear()
@@ -1560,31 +2318,26 @@ class App(ctk.CTk):
 
     # ================================================================ downloads
     def start_run(self):
-        """The Catch tab's Start: the links in its box (plus unfinished downloads, if you want them)."""
-        ids = self.catch.ids()
-        resume = None
-        if self.pending:
-            if not ids:
-                return self.resume_run()
-            ans = messagebox.askyesnocancel(APP_NAME, f"{self._pending_count()} unfinished download(s) from "
-                                                      "before are waiting. Continue them in this run too?\n\n"
-                                                      "No throws them away.", parent=self)
-            if ans is None:
-                return
-            if ans:
-                resume = self.pending
-            else:
-                E.discard_queue(WORK_DIR)
-            self.pending = None
-        if not ids and not resume:
-            messagebox.showwarning(APP_NAME, "No Steam Workshop links or IDs found. Paste some in the box, or "
-                                             "find mods in the Browse tab.", parent=self)
+        """The Catch tab's Start: everything on the catch list (plus unfinished downloads, if you want them).
+        Links still in the box go to the list first; they download with the next Start."""
+        typed = self.catch.ids()
+        if typed:
+            self.catch.to_list()
+            self.toast(f"{len(typed)} link{'s' if len(typed) != 1 else ''} from the box went to the catch list "
+                       "first: press Start again (or Download all) to download them.", color=ACCENT)
+            return
+        ids = [i for i in self.catch_list if not self.list_state(i)[0].startswith("↓") and i not in self.dep_check]
+        if self.pending and not ids:
+            return self.resume_run()
+        if not ids:
+            messagebox.showwarning(APP_NAME, "The catch list is empty. Paste Workshop links (mods or collections) "
+                                             "in the box, or find mods in the Browse tab.", parent=self)
             return
         if not self.mod_dir():
             if not messagebox.askyesno(APP_NAME, "No game chosen at the top. Save the mods to the downloads "
                                                  "folder instead?", parent=self):
                 return
-        self._launch(ids, resume=resume)
+        self.catch_ids(ids)
 
     def _pending_count(self):
         if not self.pending:
@@ -1700,6 +2453,12 @@ class App(ctk.CTk):
         finished_ids = set(s.get("done_ids", [])) | set(s.get("already_ids", []))
         if finished_ids:
             self.catch.remove_ids(finished_ids)
+            if finished_ids & set(self.catch_list):        # installed: they leave the catch list
+                for wid in finished_ids:
+                    self.catch_list.pop(wid, None)
+                self.catch_list_changed()
+        self.catch.render_list()
+        self.catch._retry_button()
         self.pending = E.load_queue(os.path.join(WORK_DIR, "queue.json")) if s.get("resumable") else None
         self.catch.set_running(False, bool(self.pending))
         if self.pending:
@@ -1713,7 +2472,14 @@ class App(ctk.CTk):
         self._run_status()
         self.rescan()
         if nxt:
-            self.after(600, lambda: self._launch(nxt))
+            def go(nxt=nxt):
+                jobs = self.update_jobs_for(nxt)
+                if jobs:
+                    self.update_run = jobs
+                    self._launch(nxt, {"force_ids": list(jobs), "replace": jobs})
+                else:
+                    self._launch(nxt)
+            self.after(600, go)
         elif head == "Finished" and (s.get("installed") or s.get("missing")):
             bits = []
             if s.get("installed"):
@@ -1768,6 +2534,11 @@ class App(ctk.CTk):
             "play_failed": lambda msg: self.banner.show(f"{WARN_ICON}  {msg}", actions=[("Start Steam", LA.start_steam)],
                                                         kind="play"),
             "finished": self._finished,
+            "deps": self._deps_found,
+            "links_resolved": self._links_resolved,
+            "compat": lambda *a: self.conflicts.compat_found(*a),
+            "storage": self._storage_measured,
+            "storage_cleared": self._storage_cleared,
         }
         for _ in range(3000):
             try:
@@ -1786,6 +2557,8 @@ class App(ctk.CTk):
             except Exception as e:
                 self._report(traceback.format_exc(), e)
         flush()
+        if changed_dl and self.catch_list:
+            self.catch.refresh_list()
         if (changed_dl or self._browse_dirty_status) and self.visible("Browse"):
             self._browse_dirty_status = False
             self.browse.refresh_status()
@@ -1909,6 +2682,55 @@ class App(ctk.CTk):
             self._resume_banner()
         self._run_status()
         self._tab_info()
+        self.after(2500, self.check_storage)
+        self.after(3500, self._crash_banner)
+        if self.cfg.get("seen_version") != APP_VERSION:
+            if not self._first_run:
+                self.after(1200, lambda: WhatsNewWindow(self))
+            self.cfg["seen_version"] = APP_VERSION
+            self.save()
+
+    # ---- cached files that only take up room
+    def check_storage(self, on_done=None):
+        """Measure the cached pictures and pages (in the background); above the limit, offer to clear them."""
+        busy = self.running() or bool(self.pending)
+
+        def work():
+            cats = ST.categories(WORK_DIR, busy)
+            self.q.put(("storage", cats, on_done))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _storage_measured(self, cats, on_done=None):
+        if on_done:
+            on_done(cats)
+            return
+        total = ST.total(cats)
+        limit = int(self.cfg.get("cleanup_limit_mb", ST.DEFAULT_LIMIT_MB)) * 1000 * 1000
+        if total <= limit:
+            return
+        if self.banner.kind is not None:          # something more important is showing: ask a bit later
+            self.after(60000, self.check_storage)
+            return
+        self.banner.show(f"Cached pictures and pages take {ST.human(total)} (your limit is "
+                         f"{ST.label_mb(int(self.cfg.get('cleanup_limit_mb', ST.DEFAULT_LIMIT_MB)))}). They come back "
+                         "by themselves when needed. Clear them?",
+                         actions=[("Clear them", lambda: self.clear_storage(cats)),
+                                  ("Change the limit", lambda: self._open_settings("Storage")),
+                                  ("Not now", lambda: self.banner.hide("storage"))], kind="storage", tone="info")
+
+    def clear_storage(self, cats, on_done=None):
+        self.banner.hide("storage")
+
+        def work():
+            freed = ST.clear(cats)
+            self.q.put(("storage_cleared", freed, on_done))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _storage_cleared(self, freed, on_done=None):
+        self._thumbs.clear()
+        self.toast(f"Freed {ST.human(freed)} of cached files.")
+        if on_done:
+            on_done(freed)
 
     def _open_help_first(self):
         self.toast("Tip: ? (top right) explains every part of the app, starting with \"Start here\".", color=ACCENT)
@@ -1916,6 +2738,35 @@ class App(ctk.CTk):
     def _theme_label(self):
         dark = ctk.get_appearance_mode() == "Dark"
         self.theme_btn.configure(image=icon("sun" if dark else "moon", 15))
+
+    def offer_restart(self):
+        """The palette changed: it applies when the app starts again."""
+        new = self.cfg.get("palette", "Classic")
+        if self.engine:
+            messagebox.showinfo(APP_NAME, f"The {new} palette applies the next time the app starts (downloads are "
+                                          "running, so it doesn't restart now).", parent=self)
+            return
+        if messagebox.askyesno(APP_NAME, f"The {new} palette applies when the app starts again.\n\nRestart now?",
+                               parent=self):
+            self.restart()
+
+    def restart(self):
+        args = [sys.executable] + (sys.argv[1:] if getattr(sys, "frozen", False) else
+                                   [os.path.abspath(sys.argv[0])] + sys.argv[1:])
+        env = os.environ.copy()
+        if getattr(sys, "frozen", False):
+            # A one-file .exe started from itself would reuse this copy's unpack folder in %TEMP%, which
+            # is deleted when this copy closes (the new one then can't find its files and crashes).
+            # Tell PyInstaller to start fresh, and drop what this copy passed on.
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+            for k in list(env):
+                if k.startswith("_PYI_") or k in ("_MEIPASS2", "_PYI_SPLASH_IPC"):
+                    env.pop(k, None)
+        self._close()                       # saves everything; no downloads run (offer_restart checked)
+        try:
+            subprocess.Popen(args, cwd=APP_DIR, close_fds=True, env=env)
+        except Exception as e:
+            print("restart failed:", e)
 
     def _toggle_theme(self):
         new = "Light" if ctk.get_appearance_mode() == "Dark" else "Dark"
@@ -1932,16 +2783,19 @@ class App(ctk.CTk):
         topic = next((t for t, _ in HT.TOPICS if t.split(":")[0].strip() == tab), None)
         self.help_win = HelpWindow(self, topic)
 
-    def _open_settings(self):
+    def _open_settings(self, tab=None):
         if self.settings_win and self.settings_win.winfo_exists():
             self.settings_win.focus()
+            if tab:
+                self.settings_win.tabs.set(tab)
             return
-        self.settings_win = SettingsWindow(self)
+        self.settings_win = SettingsWindow(self, tab)
 
     def apply_settings(self, cfg):
         for k in NOT_IN_SETTINGS_WINDOW:
             cfg[k] = self.cfg.get(k, DEFAULTS[k])
         hints_changed = cfg.get("workshop_hints") != self.cfg.get("workshop_hints")
+        older_changed = cfg.get("older_first") != self.cfg.get("older_first")
         dirs_changed = cfg.get("game_dirs") != self.cfg.get("game_dirs")
         self.cfg = cfg
         self.save()
@@ -1954,6 +2808,8 @@ class App(ctk.CTk):
             self._fill_versions()
         if hints_changed or dirs_changed:
             self.schedule_analysis(force=True)
+        elif older_changed:
+            self.playsets.refresh_derived()
         en = self.effective_enabled()
         self.log("Settings saved. Chain: " + "  >  ".join(
             S.SOURCE_BY_KEY[k].name for k in cfg["order"] if en.get(k)))
@@ -1992,4 +2848,10 @@ class App(ctk.CTk):
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()          # the check window runs as a second copy of the .exe
+    if sys.platform.startswith("win"):
+        try:                                  # the taskbar shows our icon (not Python's) and groups our windows
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Adromedary.ParadoxicalLauncher")
+        except Exception:
+            pass
     App().mainloop()

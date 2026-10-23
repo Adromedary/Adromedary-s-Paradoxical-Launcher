@@ -1,11 +1,16 @@
 """The Catch tab: links in, download queue out."""
+import os
 import re
+import webbrowser
+from tkinter import messagebox
 
 import customtkinter as ctk
 
+import icons
 import sources as S
-from gui_common import (ACCENT, ACCENT_SOFT, BG, BORDER, CARD_HI, MONO, MUTED, MUTED_SOFT, OK, OK_SOFT, TEAL,
-                        TEAL_SOFT, TEXT, WARN, WARN_ICON, WARN_SOFT, Tree, button, card, font, icon)
+from gui_common import (ACCENT, ACCENT_SOFT, APP_NAME, BG, BORDER, CARD_HI, MONO, MUTED, MUTED_SOFT, OK, OK_SOFT,
+                        RIGHT_CLICK, TEAL, TEAL_SOFT, TEXT, WARN, WARN_ICON, WARN_SOFT, button, card, copy_text, font,
+                        icon, popup_menu, px, tk_image, Tree)
 
 KIND_COLOR = {"Official": OK, "Official mod platform": OK, "Workshop mirror": WARN,
               "Mod hub": ACCENT, "Creator-hosted": TEAL}
@@ -14,6 +19,7 @@ KIND_SOFT = {"Official": OK_SOFT, "Official mod platform": OK_SOFT, "Workshop mi
 STATE_LABEL = {"Queued": "Queued", "Working": "Working", "Done": "Done", "Already": "Have it",
                "Not found": "Not found", "Collection": "Collection", "Stopped": "Stopped",
                "Paused": "Paused", "Interrupted": "Interrupted"}
+RETRY_STATES = ("Not found", "Interrupted", "Stopped")
 STATE_TAG = {"Done": "ok", "Already": "ok", "Not found": "missing", "Collection": "group",
              "Stopped": "conflict", "Paused": "conflict", "Interrupted": "conflict", "Working": "update",
              "Queued": "muted"}
@@ -37,15 +43,22 @@ class CatchPage(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.app = app
         self.rows = {}               # item id -> tree row id
+        self.titles = {}             # item id -> title
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
+        self.failed = {}             # item id -> title: downloads that didn't work (Retry)
+        self.grid_columnconfigure(1, weight=0)
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew")
         top.grid_columnconfigure(0, weight=1)
+        side = ctk.CTkFrame(self, fg_color="transparent", width=1, height=1)
+        side.grid(row=0, column=1, rowspan=4, sticky="ns", padx=(12, 0))
+        side.grid_rowconfigure(1, weight=1)
+        side.grid_columnconfigure(0, weight=1)
         # ---- links
         lc = card(top)
-        lc.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        lc.grid(row=0, column=0, sticky="nsew")
         lc.grid_columnconfigure(0, weight=1)
         head = ctk.CTkFrame(lc, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
@@ -57,9 +70,12 @@ class CatchPage(ctk.CTkFrame):
         self.count_chip = ctk.CTkLabel(head, text="0 links", width=66, height=22, corner_radius=11, fg_color=BG,
                                        text_color=MUTED, font=font(11, "bold"))
         self.count_chip.grid(row=0, column=2, padx=(0, 6))
-        button(head, "Paste", self._paste_button, width=70, height=26, icon_name="copy", icon_size=13
-               ).grid(row=0, column=3, padx=(0, 4))
-        button(head, "Clear", self._clear, width=66, height=26, icon_name="close", icon_size=13).grid(row=0, column=4)
+        button(head, "Paste", self._paste_button, width=70, height=26, icon_name="copy", icon_size=13,
+               tip="Paste links: they go straight to the catch list").grid(row=0, column=3, padx=(0, 4))
+        button(head, "Add to list", self.to_list, primary=True, width=96, height=26, icon_name="layers", icon_size=13,
+               tip="Put the links in the box on the catch list (nothing downloads yet)").grid(row=0, column=4,
+                                                                                             padx=(0, 4))
+        button(head, "Clear", self._clear, width=66, height=26, icon_name="close", icon_size=13).grid(row=0, column=5)
         self.links = ctk.CTkTextbox(lc, height=84, fg_color=BG, border_width=1, border_color=BORDER, text_color=TEXT,
                                     corner_radius=8, font=ctk.CTkFont(MONO, 12), wrap="none")
         self.links.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
@@ -71,8 +87,8 @@ class CatchPage(ctk.CTkFrame):
         self.chain_strip.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 10))
 
         # ---- controls
-        cc = card(top)
-        cc.grid(row=0, column=1, sticky="nsew")
+        cc = card(side)
+        cc.grid(row=0, column=0, sticky="new")
         btns = ctk.CTkFrame(cc, fg_color="transparent")
         btns.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         self.start_btn = button(btns, "Start", app.start_run, primary=True, width=96, height=34, icon_name="download")
@@ -107,6 +123,48 @@ class CatchPage(ctk.CTkFrame):
         self.count_lbl.grid(row=0, column=1)
         self._workers_changed(app.cfg["workers"])
 
+        # ---- the catch list: mods added in Browse, kept until they're installed or removed
+        lst = card(side)
+        lst.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        lst.grid_columnconfigure(0, weight=1)
+        lst.grid_rowconfigure(2, weight=1)
+        lh = ctk.CTkFrame(lst, fg_color="transparent")
+        lh.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 0))
+        lh.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(lh, text="", image=icon("layers", 17, ACCENT), width=20).grid(row=0, column=0, padx=(0, 6))
+        ctk.CTkLabel(lh, text="Catch list", text_color=TEXT, font=font(14, "bold")).grid(row=0, column=1, sticky="w")
+        self.list_count = ctk.CTkLabel(lh, text="", height=22, corner_radius=11, fg_color=MUTED_SOFT,
+                                       text_color=MUTED, font=font(11, "bold"), padx=8)
+        self.list_count.grid(row=0, column=2, sticky="e")
+        ctk.CTkLabel(lst, text="Added in Browse, from links or with Catch all. Each mod stays here until it's "
+                               "installed or you remove it.",
+                     text_color=MUTED, font=font(11), anchor="w", justify="left", wraplength=330
+                     ).grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 6))
+        self.clist = Tree(lst, [("title", "Mod", 190, "w", True), ("state", "Status", 92, "w", False),
+                                ("dl", "", 34, "center", False), ("rm", "", 34, "center", False)],
+                          show_tree=True, image_width=50, selectmode="extended", height=6)
+        self.clist.grid(row=2, column=0, sticky="nsew", padx=8)
+        ct = self.clist.tree
+        ct.heading("dl", text="↓")
+        ct.heading("rm", text="✕")
+        ct.bind("<ButtonRelease-1>", self._list_click, add="+")
+        ct.bind("<Motion>", self._list_hover, add="+")
+        ct.bind("<Delete>", lambda e: self.app.remove_from_catch_list(self._list_selected()))
+        ct.bind("<Double-1>", lambda e: self._list_open())
+        self.list_rows = {}           # row id -> workshop id
+        self.list_empty = ctk.CTkLabel(self.clist, text="Nothing waiting.\nPaste Workshop links above, or in\n"
+                                                        "Browse pick mods and press \"Add to list\".", text_color=MUTED, font=font(12),
+                                       justify="center", image=icon("layers", 34, MUTED), compound="top")
+        lf = ctk.CTkFrame(lst, fg_color="transparent")
+        lf.grid(row=3, column=0, sticky="ew", padx=12, pady=(8, 12))
+        lf.grid_columnconfigure((0, 1), weight=1, uniform="lf")
+        self.list_all = button(lf, "Download all", lambda: self.app.catch_from_list(), primary=True, height=32,
+                               icon_name="download", icon_size=14)
+        self.list_all.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.list_clear = button(lf, "Clear all", self._clear_list, height=32, icon_name="trash", icon_size=13,
+                                 danger=True)
+        self.list_clear.grid(row=0, column=1, sticky="ew")
+
         # ---- queue
         qhead = ctk.CTkFrame(self, fg_color="transparent")
         qhead.grid(row=1, column=0, sticky="ew", pady=(10, 4))
@@ -114,17 +172,23 @@ class CatchPage(ctk.CTkFrame):
         ctk.CTkLabel(qhead, text="Queue", text_color=TEXT, font=font(14, "bold")).grid(row=0, column=0, sticky="w")
         self.queue_note = ctk.CTkLabel(qhead, text="", text_color=MUTED, font=font(11), anchor="w")
         self.queue_note.grid(row=0, column=1, sticky="w", padx=10)
+        self.retry_btn = button(qhead, "Retry failed", self.retry_failed, height=26, icon_name="retry", icon_size=13,
+                                tip="Try the downloads that didn't work again")
+        self.retry_btn.grid(row=0, column=2, padx=(0, 6))
+        self.retry_btn.grid_remove()
         button(qhead, "Mod folder", app.open_mod_dir, height=26, icon_name="folder", icon_size=13
-               ).grid(row=0, column=2, padx=(0, 6))
+               ).grid(row=0, column=3, padx=(0, 6))
         self.log_btn = button(qhead, "", self._toggle_log, height=26, width=96, icon_name="log", icon_size=13)
-        self.log_btn.grid(row=0, column=3)
-        self.queue = Tree(self, [("mod", "Mod", 380, "w", True), ("game", "Game", 150, "w", False),
-                                 ("status", "Status", 110, "w", False), ("detail", "Details", 420, "w", True)],
-                          show_tree=True, selectmode="browse", main="mod", drop=("game",), min_main=240)
+        self.log_btn.grid(row=0, column=4)
+        self.queue = Tree(self, [("mod", "Mod", 300, "w", True), ("game", "Game", 130, "w", False),
+                                 ("status", "Status", 110, "w", False), ("detail", "Details", 280, "w", True),
+                                 ("act", "", 78, "center", False)],
+                          show_tree=True, selectmode="browse", main="mod", drop=("game",), min_main=240,
+                          key="catch.queue")
         self.queue.grid(row=2, column=0, sticky="nsew")
-        self.empty = ctk.CTkLabel(self.queue, text="Paste Workshop links above and press Start, or catch mods "
-                                                   "from the Browse tab.\nUnfinished downloads resume where they "
-                                                   "stopped.", text_color=MUTED, font=font(13), justify="center",
+        self.empty = ctk.CTkLabel(self.queue, text="Paste Workshop links above: they go to the catch list. Press "
+                                                   "Start (or Download all) to download it.\nUnfinished downloads "
+                                                   "resume where they stopped.", text_color=MUTED, font=font(13), justify="center",
                                   image=icon("download", 42, MUTED), compound="top")
         self.empty.place(relx=0.5, rely=0.5, anchor="center")
         self.log_box = ctk.CTkTextbox(self, height=150, fg_color=BG, border_width=1, border_color=BORDER,
@@ -135,6 +199,13 @@ class CatchPage(ctk.CTkFrame):
             self.log_box.grid_remove()
         self._log_label()
         self.draw_chain_strip()
+        qt = self.queue.tree
+        qt.bind("<ButtonRelease-1>", self._queue_click, add="+")
+        qt.bind("<Motion>", self._queue_hover, add="+")
+        for ev in RIGHT_CLICK:
+            qt.bind(ev, self._queue_context, add="+")
+            self.clist.tree.bind(ev, self._list_context, add="+")
+        self.render_list()
 
     # ---------------------------------------------------------------- links box
     def ids(self):
@@ -171,14 +242,32 @@ class CatchPage(ctk.CTkFrame):
             txt = self.clipboard_get()
         except Exception:
             return "break"
-        self._insert_links(txt)
+        ids = parse_ids(txt)
+        if ids:                                       # links go to the catch list; nothing downloads yet
+            self.app.add_links_to_list(ids)
+        else:
+            self._insert_links(txt)
         return "break"
 
     def _paste_button(self):
         try:
-            self._insert_links(self.clipboard_get(), at="end")
+            txt = self.clipboard_get()
         except Exception:
-            pass
+            return
+        ids = parse_ids(txt)
+        if ids:
+            self.app.add_links_to_list(ids)
+        else:
+            self._insert_links(txt, at="end")
+
+    def to_list(self):
+        """The links typed in the box move to the catch list."""
+        ids = self.ids()
+        if not ids:
+            self.app.toast("No Workshop links or IDs in the box.")
+            return
+        self.app.add_links_to_list(ids)
+        self.remove_ids(ids)
 
     def _clear(self):
         self.links.delete("1.0", "end")
@@ -263,6 +352,8 @@ class CatchPage(ctk.CTkFrame):
     def clear_queue(self):
         self.queue.tree.delete(*self.queue.tree.get_children())
         self.rows.clear()
+        self.failed.clear()
+        self._retry_button()
         self.progress.set(0)
         self.count_lbl.configure(text="0 / 0 mods")
         self.empty.place_forget()
@@ -272,10 +363,12 @@ class CatchPage(ctk.CTkFrame):
             return
         parent = self.rows.get(it.parent, "")
         label = ("▤ " if it.is_collection else "") + it.title
-        rid = self.queue.tree.insert(parent, "end", values=(label, it.game, "Queued", f"ID {it.id}"),
+        rid = self.queue.tree.insert(parent, "end", values=(label, it.game, "Queued", f"ID {it.id}", ""),
                                      tags=("group",) if it.is_collection else ("muted",), open=True)
         self.rows[it.id] = rid
-        self.queue_note.configure(text=f"{len([1 for _ in self.rows])} entries")
+        self.titles[it.id] = it.title
+        n = len(self.rows)
+        self.queue_note.configure(text=f"{n} entr{'ies' if n != 1 else 'y'}")
 
     def set_status(self, iid, state, text, progress):
         rid = self.rows.get(iid)
@@ -285,10 +378,19 @@ class CatchPage(ctk.CTkFrame):
         if state == "Working" and progress is not None:
             label = f"Working {int(progress * 100)}%"
         vals = list(self.queue.tree.item(rid, "values"))
+        while len(vals) < 5:
+            vals.append("")
         vals[2] = label
         if text:
             vals[3] = text
+        failed = state in RETRY_STATES
+        vals[4] = "↻ Retry" if failed else ""
+        if failed:
+            self.failed[iid] = self.titles.get(iid, iid)
+        else:
+            self.failed.pop(iid, None)
         self.queue.tree.item(rid, values=vals, tags=(STATE_TAG.get(state, "muted"),))
+        self._retry_button()
 
     def set_progress(self, done, total):
         self.progress.set(done / total if total else 0)
@@ -310,3 +412,174 @@ class CatchPage(ctk.CTkFrame):
 
     def _log_label(self):
         self.log_btn.configure(text="Hide log" if self.app.cfg.get("show_log", True) else "Show log")
+
+    # ---------------------------------------------------------------- retrying what failed
+    def _retry_button(self):
+        n = len(self.failed)
+        if n and not self.app.running():
+            self.retry_btn.configure(text=f"Retry failed ({n})")
+            self.retry_btn.grid()
+        else:
+            self.retry_btn.grid_remove()
+
+    def retry_failed(self):
+        if self.failed:
+            self.app.retry_ids(list(self.failed))
+
+    def _queue_cell(self, e):
+        t = self.queue.tree
+        if t.identify_region(e.x, e.y) != "cell":
+            return None, None
+        rid, col = t.identify_row(e.y), t.identify_column(e.x)
+        try:
+            cid = t.column(col, "id")
+        except Exception:
+            return None, None
+        return rid, cid
+
+    def _queue_click(self, e):
+        rid, cid = self._queue_cell(e)
+        if cid != "act" or not rid:
+            return
+        iid = next((i for i, r in self.rows.items() if r == rid), None)
+        if iid in self.failed and not self.app.running():
+            self.app.retry_ids([iid])
+
+    def _queue_hover(self, e):
+        rid, cid = self._queue_cell(e)
+        iid = next((i for i, r in self.rows.items() if r == rid), None) if cid == "act" else None
+        want = "hand2" if iid in self.failed else ""
+        if str(self.queue.tree.cget("cursor")) != want:
+            self.queue.tree.configure(cursor=want)
+
+    # ---------------------------------------------------------------- the catch list
+    def render_list(self):
+        """Rows for every mod in the catch list, with what's happening to it right now."""
+        t = self.clist.tree
+        sel = {self.list_rows.get(r) for r in t.selection()}
+        t.delete(*t.get_children())
+        self.list_rows.clear()
+        items = list(self.app.catch_list.items())
+        for i, (wid, title) in enumerate(items):
+            st, tag = self.app.list_state(wid)
+            img = self._list_img(wid)
+            rid = t.insert("", "end", image=img, values=(title, st, "↓", "✕"),
+                           tags=tuple(x for x in (tag, "odd" if i % 2 else "") if x))
+            self.list_rows[rid] = wid
+            if wid in sel:
+                t.selection_add(rid)
+        n = len(items)
+        self.list_count.configure(text=f"{n} mod{'s' if n != 1 else ''}" if n else "empty",
+                                  text_color=ACCENT if n else MUTED, fg_color=ACCENT_SOFT if n else MUTED_SOFT)
+        busy = n and all(self.app.list_state(w)[0].startswith("↓") for w in self.app.catch_list)
+        self.list_all.configure(state="normal" if n and not busy else "disabled")
+        self.list_clear.configure(state="normal" if n else "disabled")
+        if n:
+            self.list_empty.place_forget()
+        else:
+            self.list_empty.place(relx=0.5, rely=0.5, anchor="center")
+
+    def refresh_list(self):
+        """Only the Status column (cheap: runs while downloads report progress)."""
+        t = self.clist.tree
+        for rid, wid in self.list_rows.items():
+            st, tag = self.app.list_state(wid)
+            if t.set(rid, "state") != st:
+                t.set(rid, "state", st)
+                tags = [x for x in t.item(rid, "tags") if x == "odd"]
+                if tag:
+                    tags.insert(0, tag)
+                t.item(rid, tags=tags)
+        busy = self.list_rows and all(self.app.list_state(w)[0].startswith("↓") for w in self.list_rows.values())
+        self.list_all.configure(state="disabled" if busy or not self.list_rows else "normal")
+
+    def _list_img(self, wid):
+        try:
+            p = os.path.join(self.app.thumbs_dir, wid + ".jpg")
+            if not icons.available() or not os.path.isfile(p):
+                return ""
+            im = icons.load_thumb(p, px(22))
+            return tk_image(self.clist.tree, ("cl", wid, px(22)), icons.rounded(im, px(4))) if im is not None else ""
+        except Exception:
+            return ""
+
+    def _list_selected(self):
+        return [self.list_rows[r] for r in self.clist.tree.selection() if r in self.list_rows]
+
+    def _list_cell(self, e):
+        t = self.clist.tree
+        if t.identify_region(e.x, e.y) != "cell":
+            return None, None
+        try:
+            return self.list_rows.get(t.identify_row(e.y)), t.column(t.identify_column(e.x), "id")
+        except Exception:
+            return None, None
+
+    def _list_click(self, e):
+        wid, cid = self._list_cell(e)
+        if not wid:
+            return
+        if cid == "dl":
+            self.app.catch_from_list([wid])
+        elif cid == "rm":
+            self.app.remove_from_catch_list([wid])
+
+    def _list_hover(self, e):
+        wid, cid = self._list_cell(e)
+        want = "hand2" if wid and cid in ("dl", "rm") else ""
+        if str(self.clist.tree.cget("cursor")) != want:
+            self.clist.tree.configure(cursor=want)
+
+    def _list_open(self):
+        sel = self._list_selected()
+        if sel:
+            webbrowser.open(f"https://steamcommunity.com/sharedfiles/filedetails/?id={sel[0]}")
+
+    def _clear_list(self):
+        n = len(self.app.catch_list)
+        if n and messagebox.askyesno(APP_NAME, f"Remove all {n} mod{'s' if n != 1 else ''} from the catch list?",
+                                     parent=self.app):
+            self.app.remove_from_catch_list(list(self.app.catch_list))
+
+    # ---------------------------------------------------------------- right-click
+    def _queue_context(self, e):
+        t = self.queue.tree
+        rid = t.identify_row(e.y)
+        iid = next((i for i, r in self.rows.items() if r == rid), None)
+        if not iid:
+            return
+        t.selection_set(rid)
+        url = f"https://steamcommunity.com/sharedfiles/filedetails/?id={iid}"
+        title = self.titles.get(iid, iid)
+        popup_menu(t, e, [
+            ("Retry", "retry", lambda: self.app.retry_ids([iid]), iid in self.failed and not self.app.running()),
+            ("Retry every failed one", "retry", self.retry_failed, len(self.failed) > 1 and not self.app.running()),
+            None,
+            ("Steam page", "external", lambda: webbrowser.open(url)),
+            ("Copy", "copy", [("Link", None, lambda: self._copy(url)), ("Title", None, lambda: self._copy(title)),
+                              ("Details", None, lambda: self._copy(" | ".join(str(v) for v in t.item(rid, "values")
+                                                                              if v)))])])
+
+    def _list_context(self, e):
+        t = self.clist.tree
+        rid = t.identify_row(e.y)
+        if rid not in self.list_rows:
+            return
+        if rid not in t.selection():
+            t.selection_set(rid)
+        ids = self._list_selected()
+        one = ids[0]
+        url = f"https://steamcommunity.com/sharedfiles/filedetails/?id={one}"
+        many = len(ids) > 1
+        popup_menu(t, e, [
+            (f"Download {len(ids)} now" if many else "Download now", "download", lambda: self.app.catch_from_list(ids)),
+            (f"Remove {len(ids)} from the list" if many else "Remove from the list", "minus",
+             lambda: self.app.remove_from_catch_list(ids)),
+            None,
+            ("Steam page", "external", lambda: webbrowser.open(url), not many),
+            ("Copy the link" + ("s" if many else ""), "copy", lambda: self._copy("\n".join(
+                f"https://steamcommunity.com/sharedfiles/filedetails/?id={i}" for i in ids)))])
+
+    def _copy(self, text):
+        copy_text(self, text)
+        self.app.toast("Copied.", color=MUTED)

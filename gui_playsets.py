@@ -1,6 +1,7 @@
 """The Playsets tab: named mod lists in load order, Auto-sort, and who wins each shared file."""
 import os
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -11,10 +12,13 @@ import launcher as LA
 import loadorder as L
 import modscan
 import roles as R
+import updates as U
 import versions as V
-from gui_common import (ACCENT, APP_NAME, APP_SHORT, BORDER, CARD, CARD_HI, ERR, INFO, INFO_SOFT, MISS_ICON, MUTED,
-                        OK, OK_SOFT, SEV_COLOR, SEV_ICON, SEV_SOFT, TEXT, VER_ICON, WARN, DetailPane, Split, Tree,
-                        button, card, ctk_image, fit_geometry, font, page_frame, pick, row_picture, units, DETAIL_WIDTH)
+from gui_common import badge_image
+from gui_common import (ACCENT, APP_NAME, APP_SHORT, BORDER, CARD, CARD_HI, DETAIL_WIDTH, ERR, INFO, INFO_SOFT,
+                        MISS_ICON, MUTED, OK, OK_SOFT, RIGHT_CLICK, SEV_COLOR, SEV_ICON, SEV_SOFT, TEXT, VER_ICON,
+                        WARN, DetailPane, Split, Tree, button, card, clearable, fit_geometry, font,
+                        page_frame, pick, popup_menu, row_picture, units)
 
 ISSUE_COUNT_SEVS = ("critical", "high", "medium")
 
@@ -67,6 +71,9 @@ class PlaysetsPage(ctk.CTkFrame):
         self.import_btn.grid(row=2, column=0, sticky="ew", padx=2, pady=(8, 2))
         button(pb, "Export", self.export_profile, height=28, width=10, icon_name="upload", icon_size=13
                ).grid(row=2, column=1, sticky="ew", padx=2, pady=(8, 2))
+        self.clear_all_btn = button(pb, "Clear all rules", self.clear_all_rules, height=28, width=10,
+                                    icon_name="broom", icon_size=13, tip="Remove every rule of this playset")
+        self.clear_all_btn.grid(row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(8, 2))
         self.health = ctk.CTkFrame(left, fg_color=CARD_HI, corner_radius=10)
         self.health.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 10))
 
@@ -78,6 +85,9 @@ class PlaysetsPage(ctk.CTkFrame):
         tb.grid(row=0, column=0, sticky="ew")
         self.sort_btn = button(tb, "Auto-sort", self.auto_sort, primary=True, width=112, icon_name="sparkle")
         self.sort_btn.pack(side="left")
+        self.clear_rules_btn = button(tb, "", self.clear_rules_selected, width=32, icon_name="broom",
+                                      tip="Clear the rules of the selected mod(s)")
+        self.clear_rules_btn.pack(side="left", padx=(4, 0))
         self.undo_btn = button(tb, "", self.do_undo, width=32, icon_name="undo", tip="Undo")
         self.undo_btn.pack(side="left", padx=(8, 2))
         self.redo_btn = button(tb, "", self.do_redo, width=32, icon_name="redo", tip="Redo")
@@ -109,17 +119,19 @@ class PlaysetsPage(ctk.CTkFrame):
                 ("name", "Mod  (top loads first, lower wins)", 220, "w", True), ("role", "Role", 150, "w", False),
                 ("files", "Shared files", 110, "w", False), ("issues", "Issues", 74, "w", False)]
         self.order = Tree(top, cols, show_tree=True, big=True, image_width=72, main="name",
-                          drop=("files", "role"), min_main=200)
+                          drop=("files", "role"), min_main=200, key="playsets.order")
         self.order.grid(row=0, column=0, sticky="nsew")
         t = self.order.tree
-        t.bind("<ButtonPress-1>", self._press)
-        t.bind("<B1-Motion>", self._motion)
-        t.bind("<ButtonRelease-1>", self._release)
+        t.bind("<ButtonPress-1>", self._press, add="+")
+        t.bind("<B1-Motion>", self._motion, add="+")
+        t.bind("<ButtonRelease-1>", self._release, add="+")
         t.bind("<<TreeviewSelect>>", lambda e: self.show_detail())
         t.bind("<space>", lambda e: (self.toggle_selected(), "break")[1])
         t.bind("<Alt-Up>", lambda e: (self.move_selected(-1), "break")[1])
         t.bind("<Alt-Down>", lambda e: (self.move_selected(1), "break")[1])
         t.bind("<Delete>", lambda e: self.remove_selected())
+        for ev in RIGHT_CLICK:
+            t.bind(ev, self._order_context, add="+")
         ex = ctk.CTkFrame(bottom, fg_color="transparent")
         ex.grid(row=0, column=0, sticky="ew", pady=(2, 4))
         ex.grid_columnconfigure(1, weight=1)
@@ -129,13 +141,17 @@ class PlaysetsPage(ctk.CTkFrame):
                                          border_color=BORDER, text_color=TEXT, font=font(11))
         self.extra_search.grid(row=0, column=1, sticky="e", padx=(8, 6))
         self.extra_search.bind("<KeyRelease>", lambda e: self._render_extra())
+        clearable(self.extra_search, self._render_extra)
         button(ex, "Add all", self.add_all_extra, height=26, width=80).grid(row=0, column=2, padx=(0, 4))
         button(ex, "Add to playset", self.add_extra, height=26, icon_name="up", icon_size=13).grid(row=0, column=3)
         self.extra = Tree(bottom, [("name", "Installed, not in this playset (double-click to add)", 380, "w", True),
                                    ("role", "Role", 150, "w", False), ("info", "Size", 80, "e", False)],
-                          main="name", drop=("info", "role"), min_main=200)
+                          main="name", drop=("info", "role"), min_main=200, key="playsets.extra")
         self.extra.grid(row=1, column=0, sticky="nsew")
         self.extra.tree.bind("<Double-1>", lambda e: self.add_extra())
+        for ev in RIGHT_CLICK:
+            self.extra.tree.bind(ev, self._extra_context, add="+")
+            self.plist.tree.bind(ev, self._plist_context, add="+")
         vsplit.add_pane(top, minsize=160, stretch="always")
         vsplit.add_pane(bottom, size=190, minsize=90, stretch="never", name="extra")
 
@@ -273,7 +289,7 @@ class PlaysetsPage(ctk.CTkFrame):
             return
         order = [k for k in self.enabled_keys() if k in an.facts]
         self.win = L.winners(an, order, set(order))
-        self.reasons, broken = L.explain(an, order, rules=self.rules)
+        self.reasons, broken = L.explain(an, order, rules=self.rules, older_first=self.older_first())
         self.issues = A.playset_issues(an, order, self.app.game_version())
         self.mod_issues = {}
         for i in self.issues:
@@ -460,19 +476,30 @@ class PlaysetsPage(ctk.CTkFrame):
         chips = []
         if f and f.role:
             chips.append((role.name, TEXT, CARD_HI, None,
-                          ctk_image(icons.badge(role, 48), (16, 16)) if icons.available() else None))
+                          badge_image(role, 16) if icons.available() else None))
             for sec in f.role.secondary[:1]:
                 chips.append((sec.name, MUTED, CARD_HI, None,
-                              ctk_image(icons.badge(sec, 48), (14, 14)) if icons.available() else None))
+                              badge_image(sec, 14) if icons.available() else None))
         if V.compatible(m.supported, self.app.game_version()) is False:
             chips.append((f"Made for {m.supported}", INFO, INFO_SOFT, None, None))
         d.chips(chips[:3])
+        lib = self.app.library
         d.actions([("Turn off" if k in enabled else "Turn on", lambda: self.set_enabled([k], k not in enabled),
                     "power", "normal"),
-                   ("In Library", lambda: self.app.show_in_library(k), "library", "normal")])
+                   ("Remove", lambda: self.remove_keys([k]), "minus", "normal"),
+                   ("Open folder", lambda: lib.open_mod(m), "folder", "normal"),
+                   ("Delete", lambda: lib.delete_mods([m]), "trash", "danger")])
         t = d.text
+        note = self.app.crash_note(k)
+        if note:
+            t.add(note[0] + "  ", "crit", "bold")
+            t.link("See the crash", lambda: self.app.show_crash_suspect(k))
+            t.p("")
+        self._rules_text(t, k)
         if f and f.role:
             t.p(f.role.why + (f"  \u00B7  mostly {f.role.focus}" if f.role.focus else ""), "muted", "small")
+            t.add("   ")
+            t.link("In Library", lambda: self.app.show_in_library(k), "small")
         if f is None:
             t.p("Analysing your mods..." if self.app.analyzing else "", "faint")
             d.end()
@@ -493,7 +520,9 @@ class PlaysetsPage(ctk.CTkFrame):
                 where = ""
                 if x["other"]:
                     where = f"{'after' if x['rel'] == 'after' else 'before'} {an.facts[x['other']].name}: "
-                t.bullet(where + x["text"], "ok" if x["ok"] else "warn", mark="\u2713" if x["ok"] else "\u2717")
+                sure = L.SURE_LABEL.get(x.get("sure"), "")
+                t.bullet(where + x["text"] + (f"  [{sure.lower()}]" if sure else ""), "ok" if x["ok"] else "warn",
+                         mark="\u2713" if x["ok"] else "\u2717")
         w = self.win.get(k, {})
         if w.get("wins") or w.get("loses") or w.get("merged") or w.get("same"):
             t.h("Shared files with this order")
@@ -517,43 +546,179 @@ class PlaysetsPage(ctk.CTkFrame):
                          "warn" if o not in enabled else "muted")
             for o, n in sorted(f.used_by.items(), key=lambda kv: -kv[1])[:4]:
                 t.bullet(f"\"{an.facts[o].name}\" uses {n} things from it", "muted")
-        t.h("Your rules")
-        mine = [(a, b) for a, b in self.rules if k in (a, b)]
-        if not mine:
-            t.p("None. A rule keeps two mods in an order Auto-sort always respects.", "faint", "small")
-        for a, b in mine:
-            na = have[a].name if a in have else a
-            nb = have[b].name if b in have else b
-            t.bullet(f"\"{na}\" loads before \"{nb}\"   ")
-            t.link("remove", lambda rule=(a, b): self.change(rules=[x for x in self.rules if x != rule]))
-        if any(x != k for x in enabled):
-            t.p("")
-            t.link("Add a rule...", lambda: self._rule_menu(k))
         d.end()
 
-    def _rule_menu(self, k):
+    # ---- your rules for this mod (top of the panel)
+    def _rules_text(self, t, k):
+        have = self.mods_by_key()
+        name = lambda x: have[x].name if x in have else x
+        mode = next((a for a, b in self.rules if a in L.PLACEMENTS and b == k), "")
+        t.h("Your rules", small=True)
+        t.p("Placement:  ", "small")
+        for mk, label in (("", "Automatic"), ("@first", "First"), ("@early", "Early"), ("@late", "Late"),
+                          ("@last", "Last")):
+            if mk == mode:
+                t.add(f" {label} ", "chip")
+            else:
+                t.link(label, lambda mk=mk: self.set_placement(k, mk), "small")
+            t.add("   ")
+        pairs = [(a, b) for a, b in self.rules if a not in L.PLACEMENTS and k in (a, b)]
+        for a, b in pairs:
+            t.bullet((f"Loads before \"{name(b)}\"" if a == k else f"Loads after \"{name(a)}\"") + "   ", "small")
+            t.link("remove", lambda rule=(a, b): self.change(rules=[x for x in self.rules if x != rule]), "small")
+        if any(x != k for x in self.enabled_keys()):
+            t.p("")
+            t.link("+ Loads after...", lambda: self._rule_menu(k, "after"), "small")
+            t.add("     ")
+            t.link("+ Loads before...", lambda: self._rule_menu(k, "before"), "small")
+        if not mode and not pairs:
+            t.p("Auto-sort always keeps your rules; it works out everything else.", "faint", "small")
+
+    def rules_of(self, keys):
+        keys = set(keys)
+        return [r for r in self.rules if r[1] in keys or (r[0] not in L.PLACEMENTS and r[0] in keys)]
+
+    def clear_rules_selected(self):
+        keys = self.selected_keys()
+        if not keys:
+            self.app.toast("Select a mod first: its rules (placement, loads before/after) are cleared.")
+            return
+        gone = self.rules_of(keys)
+        if not gone:
+            self.app.toast("The selected mod has no rules." if len(keys) == 1 else "The selected mods have no rules.")
+            return
+        self.change(rules=[r for r in self.rules if r not in gone])
+        self._reselect(set(keys))
+        self.app.toast(f"Cleared {len(gone)} rule{'s' if len(gone) != 1 else ''}. Undo brings them back.")
+
+    def clear_all_rules(self):
+        if not self.name:
+            return
+        if not self.rules:
+            self.app.toast(f"\"{self.name}\" has no rules.")
+            return
+        n = len(self.rules)
+        if not messagebox.askyesno(APP_NAME, f"Remove all {n} rule{'s' if n != 1 else ''} of \"{self.name}\" "
+                                             "(placements and loads before/after)?\n\nAuto-sort will then work out "
+                                             "the whole order on its own. Undo brings them back.", parent=self.app):
+            return
+        self.change(rules=[])
+        self.app.toast(f"Cleared all rules of \"{self.name}\".")
+
+    def set_placement(self, k, mode):
+        rules = [r for r in self.rules if not (r[0] in L.PLACEMENTS and r[1] == k)]
+        if mode:
+            rules.append((mode, k))
+        self.change(rules=rules)
+
+    def _rule_menu(self, k, rel):
         """A menu of the playset's other mods: this one loads after / before the one you pick."""
         have = self.mods_by_key()
         others = sorted(((have[x].name, x) for x in self.enabled_keys() if x != k and x in have),
                         key=lambda v: v[0].lower())
-        menu = tk.Menu(self, tearoff=0, bg=pick(CARD), fg=pick(TEXT), activebackground=pick(ACCENT),
-                       activeforeground="white")
-        after = tk.Menu(menu, tearoff=0, bg=pick(CARD), fg=pick(TEXT), activebackground=pick(ACCENT),
-                        activeforeground="white")
-        before = tk.Menu(menu, tearoff=0, bg=pick(CARD), fg=pick(TEXT), activebackground=pick(ACCENT),
-                         activeforeground="white")
-        for name, x in others:
-            after.add_command(label=name, command=lambda x=x: self._add_rule(x, k))
-            before.add_command(label=name, command=lambda x=x: self._add_rule(k, x))
-        menu.add_cascade(label="This mod loads after...", menu=after)
-        menu.add_cascade(label="This mod loads before...", menu=before)
-        menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+
+        class _At:
+            pass
+        at = _At()
+        at.x_root, at.y_root = self.winfo_pointerxy()
+        popup_menu(self, at, [(n, None, (lambda x=x: self._add_rule(x, k)) if rel == "after" else
+                               (lambda x=x: self._add_rule(k, x))) for n, x in others])
 
     def _add_rule(self, a, b):
         if not a or not b or a == b:
             return
         rules = [x for x in self.rules if x not in ((a, b), (b, a))] + [(a, b)]
         self.change(rules=rules)
+
+    # ================================================================ right-click
+    def _row_at(self, tree, e, rows):
+        rid = tree.identify_row(e.y)
+        if rid not in rows:
+            return None
+        if rid not in tree.selection():
+            tree.selection_set(rid)
+            tree.focus(rid)
+        return rid
+
+    def _order_context(self, e):
+        t = self.order.tree
+        if not self._row_at(t, e, self.by_row):
+            return
+        keys = self.selected_keys()
+        have = self.mods_by_key()
+        mods = [have[k] for k in keys if k in have]
+        lib = self.app.library
+        if len(keys) > 1:
+            on = all(o for k, o in self.entries if k in keys)
+            popup_menu(t, e, [
+                (f"Turn {len(keys)} {'off' if on else 'on'}", "power", self.toggle_selected),
+                (f"Remove {len(keys)} from the playset", "minus", self.remove_selected),
+                None,
+                ("Move to the top", "top", lambda: self.move_selected("top")),
+                ("Move to the bottom", "bottom", lambda: self.move_selected("bottom")),
+                ("Clear their rules", "broom", self.clear_rules_selected, bool(self.rules_of(keys))),
+                None,
+                (f"Delete {len(mods)} mods", "trash", lambda: lib.delete_mods(mods), bool(mods))])
+            return
+        k = keys[0]
+        m = have.get(k)
+        on = dict(self.entries).get(k, False)
+        mode = next((a for a, b in self.rules if a in L.PLACEMENTS and b == k), "")
+        wid = U.workshop_id(m, self.app.registry()) if m else ""
+        has_issues = bool(self.mod_issues.get(k))
+        place = [(("✓ " if mk == mode else "") + label, None, lambda mk=mk: self.set_placement(k, mk))
+                 for mk, label in (("", "Automatic"), ("@first", "Loads first"), ("@early", "Loads early"),
+                                   ("@late", "Loads late"), ("@last", "Loads last"))]
+        popup_menu(t, e, [
+            ("Turn off" if on else "Turn on", "power", lambda: self.set_enabled([k], not on), m is not None),
+            ("Remove from the playset", "minus", lambda: self.remove_keys([k])),
+            None,
+            ("Move to the top", "top", lambda: self.move_selected("top")),
+            ("Move to the bottom", "bottom", lambda: self.move_selected("bottom")),
+            ("Placement", "layers", place),
+            ("Loads after...", "down", lambda: self._rule_menu(k, "after"), len(self.enabled_keys()) > 1),
+            ("Loads before...", "up", lambda: self._rule_menu(k, "before"), len(self.enabled_keys()) > 1),
+            ("Clear its rules", "broom", self.clear_rules_selected, bool(self.rules_of([k]))),
+            None,
+            ("Show its conflicts", "conflicts", lambda: self.app.show_conflicts_for(k), has_issues),
+            ("Show in Library", "library", lambda: self.app.show_in_library(k), m is not None),
+            ("Open folder", "folder", lambda: lib.open_mod(m), m is not None),
+            ("Steam page", "external", lambda: webbrowser.open(
+                f"https://steamcommunity.com/sharedfiles/filedetails/?id={wid}"), bool(wid)),
+            None,
+            ("Delete", "trash", lambda: lib.delete_mods([m]), m is not None)])
+
+    def _extra_context(self, e):
+        t = self.extra.tree
+        if not self._row_at(t, e, self.extra_rows):
+            return
+        keys = [self.extra_rows[r] for r in t.selection() if r in self.extra_rows]
+        have = self.mods_by_key()
+        mods = [have[k] for k in keys if k in have]
+        one = len(mods) == 1
+        popup_menu(t, e, [
+            (f"Add {len(keys)} to the playset" if not one else "Add to the playset", "plus", self.add_extra),
+            ("Add, turned off", "power", lambda: self.add_keys(keys, enabled=False)),
+            None,
+            ("Show in Library", "library", lambda: self.app.show_in_library(keys[0]), one),
+            ("Open folder", "folder", lambda: self.app.library.open_mod(mods[0]), one),
+            None,
+            ("Delete" if one else f"Delete {len(mods)} mods", "trash", lambda: self.app.library.delete_mods(mods))])
+
+    def _plist_context(self, e):
+        t = self.plist.tree
+        rid = t.identify_row(e.y)
+        if not rid:
+            return
+        name = t.item(rid, "values")[0]
+        if name != self.name:
+            t.selection_set(rid)                 # picking it makes it the active playset
+        popup_menu(t, e, [
+            ("Rename", None, self.rename_profile),
+            ("Copy", "copy", self.copy_profile),
+            ("Export to the Paradox launcher", "upload", self.export_profile),
+            None,
+            ("Delete", "trash", self.delete_profile)])
 
     # ================================================================ editing the order
     def _press(self, e):
@@ -668,7 +833,8 @@ class PlaysetsPage(ctk.CTkFrame):
 
     def remove_keys(self, keys):
         keys = set(keys)
-        self.change(entries=[(k, on) for k, on in self.entries if k not in keys])
+        self.change(entries=[(k, on) for k, on in self.entries if k not in keys],
+                    rules=[r for r in self.rules if r[0] not in keys and r[1] not in keys])
 
     def select_key(self, key):
         if self.dirty:
@@ -679,6 +845,25 @@ class PlaysetsPage(ctk.CTkFrame):
                 self.order.tree.see(rid)
 
     # ================================================================ auto-sort
+    def older_first(self):
+        return bool(self.app.cfg.get("older_first", False))
+
+    def set_older_first(self, on):
+        self.app.cfg["older_first"] = bool(on)
+        self.app.save()
+        self.refresh_derived()
+
+    def sort_result(self):
+        """(result, files lost before, files lost after) of Auto-sort for the current playset."""
+        an = self.an
+        keys = self.enabled_keys()
+        current = [k for k, _ in self.entries]
+        res = L.solve(an, current, set(keys), self.rules, older_first=self.older_first())
+        before = L.winners(an, keys, set(keys))
+        after = L.winners(an, res.enabled_order, set(keys))
+        return (res, sum(len(v["loses"]) for v in before.values()),
+                sum(len(v["loses"]) for v in after.values()))
+
     def auto_sort(self):
         if not self.entries:
             return
@@ -692,12 +877,7 @@ class PlaysetsPage(ctk.CTkFrame):
             self.app.schedule_analysis()
             self.status.configure(text="Analysing before sorting...")
             return
-        current = [k for k, _ in self.entries]
-        res = L.solve(an, current, set(keys), self.rules)
-        before = L.winners(an, keys, set(keys))
-        after = L.winners(an, res.enabled_order, set(keys))
-        lost_before = sum(len(v["loses"]) for v in before.values())
-        lost_after = sum(len(v["loses"]) for v in after.values())
+        res, lost_before, lost_after = self.sort_result()
         SortPreview(self, an, keys, res, lost_before, lost_after)
 
     def apply_sort(self, res):
@@ -833,7 +1013,8 @@ class PlaysetsPage(ctk.CTkFrame):
 # ====================================================================== preview of an auto-sort
 KIND_LABEL = {"rule": "your rule", "dependency": "dependency", "compatch": "patch / add-on", "hint": "Workshop page",
               "merge": "merged file", "clash": "shared files", "builds_on": "builds on", "replace_path": "replace_path",
-              "position": "Workshop page", "convention": "convention", "tier": "conventional order"}
+              "position": "Workshop page", "convention": "convention", "tier": "conventional order",
+              "placement": "your rule", "version": "game version"}
 
 
 class SortPreview(ctk.CTkToplevel):
@@ -841,40 +1022,77 @@ class SortPreview(ctk.CTkToplevel):
         super().__init__(page.app, fg_color=page.app.cget("fg_color"))
         import appicon
         from gui_common import APP_DIR
-        self.page, self.res = page, res
+        self.page, self.an, self.old = page, an, old
         self.title(f"Auto-sort - {APP_NAME}")
-        fit_geometry(self, 1040, 680, page.app)
-        self.minsize(760, 480)
+        fit_geometry(self, 1120, 680, page.app)
+        self.minsize(780, 480)
         self.transient(page.app)
         appicon.apply(self, APP_DIR)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
+        self.head = ctk.CTkLabel(self, text="", text_color=TEXT, font=font(17, "bold"), anchor="w")
+        self.head.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 0))
+        self.sub = ctk.CTkLabel(self, text="", text_color=MUTED, font=font(12), anchor="w", justify="left",
+                                wraplength=1040)
+        self.sub.grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 8))
+        self.tree = Tree(self, [("new", "New", 44, "e", False), ("mod", "Mod", 270, "w", True),
+                                ("old", "Was", 44, "e", False), ("move", "", 46, "center", False),
+                                ("kind", "Because of", 110, "w", False), ("sure", "How sure", 84, "w", False),
+                                ("why", "Main reason", 440, "w", True)],
+                         selectmode="browse", show_tree=True, big=True, image_width=72, key="sortpreview")
+        self.tree.grid(row=2, column=0, sticky="nsew", padx=16)
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.grid(row=3, column=0, sticky="ew", padx=16, pady=12)
+        foot.grid_columnconfigure(0, weight=1)
+        self.older = ctk.BooleanVar(value=page.older_first())
+        ctk.CTkCheckBox(foot, text="Mods for older game versions load first", variable=self.older,
+                        command=self._older, text_color=TEXT, font=font(12), fg_color=ACCENT,
+                        checkbox_width=18, checkbox_height=18).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(foot, text="Only shared files depend on load order. Mods that share nothing keep your order, "
+                                "except fix packs and total conversions near the top, interface mods near the "
+                                "bottom, and add-ons, compatches and translations after the mods they're for. "
+                                "How sure: certain (your rules, declared dependencies), likely (evidence in the "
+                                "files or Workshop page), possible (weaker evidence), convention (no effect in game).",
+                     text_color=MUTED, font=font(10), anchor="w", justify="left", wraplength=780
+                     ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        btns = ctk.CTkFrame(foot, fg_color="transparent")
+        btns.grid(row=0, column=1, rowspan=2, sticky="e")
+        button(btns, "Cancel", self.destroy, width=90, height=34).pack(side="left", padx=8)
+        button(btns, "Apply", self._apply, primary=True, width=100, height=34).pack(side="left")
+        self.fill(res, lost_before, lost_after)
+        self.after(150, self._grab)
+
+    def fill(self, res, lost_before, lost_after):
+        an, old, page = self.an, self.old, self.page
+        self.res = res
         moved_keys = L.moved_keys(old, res.enabled_order)
         moved = len(moved_keys)
-        ctk.CTkLabel(self, text=("Best order found" if moved else "Your order is already the best one found"),
-                     text_color=TEXT, font=font(17, "bold"), anchor="w").grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 0))
+        self.head.configure(text="Best order found" if moved else "Your order is already the best one found")
         parts = [f"{moved} of {len(old)} mods move" if moved else "nothing to move",
                  f"files lost to other mods: {lost_before} → {lost_after}"]
+        sure = {}
+        for k in moved_keys:
+            s = res.sure.get(k, "convention")
+            sure[s] = sure.get(s, 0) + 1
+        if sure:
+            parts.append(", ".join(f"{n} {L.SURE_LABEL[s].lower()}" for s, n in
+                                   sorted(sure.items(), key=lambda x: list(L.SURE_LABEL).index(x[0]))))
         if res.broken:
             parts.append(f"{len(res.broken)} strong wish{'es' if len(res.broken) != 1 else ''} can't all be met "
                          "(they contradict each other)")
         if not an.used_vanilla:
             parts.append("set the game folder in Settings to compare with the game's own files")
-        ctk.CTkLabel(self, text="  ·  ".join(parts), text_color=MUTED, font=font(12), anchor="w", justify="left",
-                     wraplength=980).grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 8))
-        tree = Tree(self, [("new", "New", 44, "e", False), ("mod", "Mod", 290, "w", True),
-                           ("old", "Was", 44, "e", False), ("move", "", 46, "center", False),
-                           ("kind", "Because of", 110, "w", False), ("why", "Main reason", 460, "w", True)],
-                    selectmode="browse", show_tree=True, big=True, image_width=72)
-        tree.grid(row=2, column=0, sticky="nsew", padx=16)
+        self.sub.configure(text="  ·  ".join(parts))
+        t = self.tree.tree
+        t.delete(*t.get_children())
         oldpos = {k: i for i, k in enumerate(old)}
         have = page.mods_by_key()
         for i, k in enumerate(res.enabled_order):
             mv = k in moved_keys
             d = oldpos[k] - i if mv else 0
             arrow = f"↑{d}" if d > 0 else (f"↓{-d}" if d < 0 else "")
-            why = next((x for x in res.reasons.get(k, []) if x["ok"] and x["kind"] != "tier"), None)
-            text, kind = "", ""
+            why = L.main_reason(res.reasons.get(k, []))
+            text, kind, how = "", "", ""
             if mv:
                 if why:
                     kind = KIND_LABEL.get(why["kind"], why["kind"])
@@ -883,20 +1101,16 @@ class SortPreview(ctk.CTkToplevel):
                         text = f"{'after' if why['rel'] == 'after' else 'before'} {an.facts[why['other']].name}: {text}"
                 else:
                     kind, text = "conventional order", "its role's usual place (no effect in game)"
+                how = L.SURE_LABEL.get(res.sure.get(k, "convention"), "")
             f = an.facts[k]
-            img = page.row_image(tree.tree, have.get(k), f.role.role if f.role else R.UNKNOWN)
-            tree.tree.insert("", "end", image=img, values=(i + 1, f.name, oldpos[k] + 1, arrow, kind, text),
-                             tags=("update",) if mv else ())
-        tree.stripe()
-        foot = ctk.CTkFrame(self, fg_color="transparent")
-        foot.grid(row=3, column=0, sticky="ew", padx=16, pady=12)
-        ctk.CTkLabel(foot, text="Only shared files depend on load order. Mods that share nothing keep your order, "
-                                "except foundations (fixes, conversions, frameworks) that go first and add-ons, "
-                                "compatches and translations that go last.", text_color=MUTED, font=font(10),
-                     anchor="w", justify="left", wraplength=640).pack(side="left")
-        button(foot, "Apply", self._apply, primary=True, width=100, height=34).pack(side="right")
-        button(foot, "Cancel", self.destroy, width=90, height=34).pack(side="right", padx=8)
-        self.after(150, self._grab)
+            img = page.row_image(t, have.get(k), f.role.role if f.role else R.UNKNOWN)
+            t.insert("", "end", image=img, values=(i + 1, f.name, oldpos[k] + 1, arrow, kind, how, text),
+                     tags=("update",) if mv else ())
+        self.tree.stripe()
+
+    def _older(self):
+        self.page.set_older_first(self.older.get())
+        self.fill(*self.page.sort_result())
 
     def _grab(self):
         try:

@@ -3,6 +3,7 @@ import os
 import threading
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
+from tkinter import messagebox
 
 import customtkinter as ctk
 
@@ -12,9 +13,11 @@ import launcher as LA
 import modscan
 import updates as U
 import workshop as W
-from gui_common import (ACCENT, ACCENT_SOFT, BORDER, CARD, CARD_HI, ERR, ERR_SOFT, INFO, INFO_SOFT, MUTED, MUTED_SOFT,
-                        OK, OK_SOFT, TAB_ON, TAB_ON_HI, TEXT, DetailPane, style_button, Split, Tooltip, Tree, button,
-                        ctk_image, font, icon, page_frame, pick, px, tk_image, units, DETAIL_WIDTH)
+from gui_viewer import PictureViewer
+from gui_common import (ACCENT, ACCENT_SOFT, APP_NAME, BORDER, CARD, CARD_HI, DETAIL_WIDTH, ERR, ERR_SOFT, INFO,
+                        INFO_SOFT, MUTED, MUTED_SOFT, OK, OK_SOFT, RIGHT_CLICK, TAB_ON, TAB_ON_HI, TEXT, DetailPane,
+                        Split, Tooltip, Tree, button, clearable, copy_text, ctk_image, font, icon, page_frame, pick,
+                        popup_menu, px, style_button, tk_image, units)
 
 INCLUDE, EXCLUDE = ("#d6e3fd", "#24406f"), ("#fde3e5", "#4a2228")
 CARD_MIN, CARD_MAX, GAP = 196, 250, 12          # panel view: square cards, design units
@@ -59,10 +62,14 @@ class BrowsePage(ctk.CTkFrame):
                                    border_color=BORDER, text_color=TEXT, font=font(13), corner_radius=9)
         self.search.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.search.bind("<Return>", lambda e: self.run(1))
-        button(bar, "Search", lambda: self.run(1), primary=True, height=36, width=104, icon_name="search"
-               ).grid(row=0, column=1, padx=(0, 12))
+        clearable(self.search, lambda: self.run(1))
+        button(bar, "Search", lambda: self.run(1), primary=True, height=36, width=104, icon_name="search",
+               tip="Best matches first: titles count most, then authors, then descriptions"
+               ).grid(row=0, column=1, padx=(0, 6))
+        button(bar, "", self.refresh, height=36, width=36, icon_name="refresh",
+               tip="Refresh: load this page again from Steam").grid(row=0, column=2, padx=(0, 12))
         vt = ctk.CTkFrame(bar, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
-        vt.grid(row=0, column=2)
+        vt.grid(row=0, column=3)
         self.view_btns = {}
         for i, (name, ic, tip) in enumerate((("List", "list", "A compact list with every detail in columns"),
                                              ("Panels", "grid", "Big pictures in a grid"))):
@@ -121,11 +128,13 @@ class BrowsePage(ctk.CTkFrame):
                 ("rating", "Rating", 86, "w", False), ("version", "Game", 66, "w", False),
                 ("status", "You", 110, "w", False)]
         self.table = Tree(left, cols, show_tree=True, big=True, image_width=56, main="title",
-                          drop=("subs", "updated", "author", "rating"), min_main=220)
+                          drop=("subs", "updated", "author", "rating"), min_main=220, key="browse")
         self.table.grid(row=0, column=0, sticky="nsew")
         t = self.table.tree
         t.bind("<<TreeviewSelect>>", lambda e: self.show_detail())
         t.bind("<Double-1>", lambda e: self.catch_selected())
+        for ev in RIGHT_CLICK:
+            t.bind(ev, self._row_context, add="+")
         self.panel = ctk.CTkScrollableFrame(left, fg_color=CARD, corner_radius=12, border_width=1, border_color=BORDER)
         self.panel.grid(row=0, column=0, sticky="nsew")
         self.panel.bind("<Configure>", lambda e: self._schedule_layout(), add="+")
@@ -154,8 +163,9 @@ class BrowsePage(ctk.CTkFrame):
         self.list_lbl = ctk.CTkLabel(self.list_box, text="", text_color=TEXT, font=font(12, "bold"))
         self.list_lbl.pack(side="left", padx=(6, 10), pady=6)
         button(self.list_box, "Clear", self.clear_list, height=28, width=60).pack(side="left", padx=(0, 4))
-        self.list_btn = button(self.list_box, "Catch them", self.catch_list, primary=True, height=28,
-                               icon_name="download", icon_size=14)
+        self.list_btn = button(self.list_box, "Download all", self.catch_list, primary=True, height=28,
+                               icon_name="download", icon_size=14, tip="Download every mod in the catch list (they "
+                                                                       "stay listed until they're installed)")
         self.list_btn.pack(side="left", padx=(0, 8), pady=6)
         self._render_list()
         self._paging()
@@ -274,14 +284,40 @@ class BrowsePage(ctk.CTkFrame):
         self.loading = True
         self._message("Loading the Workshop...", "browse")
         self.page_lbl.configure(text="Loading...")
+        ranked = self._ranked(q)
 
         def work():
             import net as N
-            p = W.browse(N.Net(), *q)
+            if ranked:                     # a search: Steam's first pages, best matches first
+                pages = W.browse_ranked(N.Net(), q[0], q[1], q[2], q[3], q[4], q[5], q[7])
+                for n, p in enumerate(pages, 1):
+                    if n != page:
+                        self.app.q.put(("ws_page", -1, q[:6] + (n,) + q[7:], p))
+                p = pages[page - 1] if page <= len(pages) else pages[-1]
+            else:
+                p = W.browse(N.Net(), *q)
             self.app.q.put(("ws_page", token, q, p))
         threading.Thread(target=work, daemon=True).start()
 
+    def _ranked(self, q):
+        """Searches sorted by 'Trending' (Steam: relevance) are ranked by the app: titles first."""
+        return bool(q[3]) and q[1] == "trend" and q[6] <= W.RANKED_PAGES
+
+    def refresh(self):
+        """Load the current page again from Steam (and the selected mod's details)."""
+        q = self.query(self.page_no)
+        for k in [k for k in self.cache if k[:6] == q[:6] and k[7:] == q[7:]]:
+            self.cache.pop(k, None)
+        for it in self.selected():
+            self.details.pop(it.id, None)
+            W._bb_cache.pop(it.id, None)
+        self.run(self.page_no)
+
     def page_loaded(self, token, q, p):
+        if token == -1:                    # the other pages of a ranked search: kept for Next / Previous
+            if not p.error:
+                self.cache[q] = p
+            return
         if token != self.token:
             return
         self.loading = False
@@ -362,7 +398,8 @@ class BrowsePage(ctk.CTkFrame):
             self.prev_btn.configure(state="disabled")
             self.next_btn.configure(state="disabled")
             return
-        self.page_lbl.configure(text=f"Page {self.page_no} of {max(1, p.pages):,}  ·  {p.total:,} found")
+        best = "  ·  best matches first" if self._ranked(self.query(self.page_no)) else ""
+        self.page_lbl.configure(text=f"Page {self.page_no} of {max(1, p.pages):,}  ·  {p.total:,} found{best}")
         self.prev_btn.configure(state="normal" if self.page_no > 1 else "disabled")
         self.next_btn.configure(state="normal" if self.page_no < p.pages else "disabled")
 
@@ -504,6 +541,8 @@ class BrowsePage(ctk.CTkFrame):
             lbl = ctk.CTkLabel(self.panel, text="", image=ph, width=side, height=side, cursor="hand2")
             lbl.bind("<Button-1>", lambda e, x=it: self._card_click(x, e))
             lbl.bind("<Double-1>", lambda e, x=it: self.app.catch_ids([x.id]))
+            for ev in RIGHT_CLICK:
+                lbl.bind(ev, lambda e, x=it: self._card_context(x, e))
             self.cards[it.id] = {"label": lbl, "it": it, "img": None, "st": self.status(it)[0]}
         self._grid_cards()
         self._draw_cards_async([it.id for it in items])
@@ -598,6 +637,72 @@ class BrowsePage(ctk.CTkFrame):
         for wid in before ^ set(self.sel_ids):
             self._redraw_card(wid)
         self.show_detail()
+
+    # ---- right-click
+    def _row_context(self, e):
+        t = self.table.tree
+        rid = t.identify_row(e.y)
+        if not rid or rid not in self.by_row:
+            return
+        if rid not in t.selection():
+            t.selection_set(rid)
+            t.focus(rid)
+        self._context(t, e, self.selected())
+
+    def _card_context(self, it, e):
+        if it.id not in self.sel_ids:
+            before = set(self.sel_ids)
+            self.sel_ids = [it.id]
+            for wid in before | {it.id}:
+                self._redraw_card(wid)
+            self.show_detail()
+        self._context(self.cards[it.id]["label"], e, self.selected())
+
+    def _context(self, widget, e, sel):
+        if not sel:
+            return
+        if len(sel) > 1:
+            ids = [i.id for i in sel]
+            listed = [i for i in sel if i.id in self.app.catch_list]
+            popup_menu(widget, e, [
+                (f"Catch {len(sel)} now", "download", lambda: self.app.catch_ids(ids)),
+                ("Add to catch list", "plus", lambda: self.add_to_list(sel), len(listed) < len(sel)),
+                ("Remove from catch list", "minus", lambda: self.remove_from_list(listed), bool(listed)),
+                None,
+                ("Copy their links", "copy", lambda: self._copy("\n".join(i.url for i in sel)))])
+            return
+        it = sel[0]
+        st, kind = self.status(it)
+        m = self.have().get(it.id)
+        popup_menu(widget, e, [
+            ("Update now" if kind == "update" else "Catch again" if kind == "ok" else "Catch now", "download",
+             lambda: self.app.catch_ids([it.id]), kind != "dl"),
+            ("Remove from catch list", "minus", lambda: self.remove_from_list([it])) if it.id in self.app.catch_list
+            else ("Add to catch list", "plus", lambda: self.add_to_list([it])),
+            None,
+            ("Show in Library", "library", lambda: self.app.show_in_library(m.key)) if m is not None else False,
+            ("Steam page", "external", lambda: webbrowser.open(it.url)),
+            ("Pictures", "image", lambda: self._pictures(it)),
+            None,
+            ("Copy", "copy", [("Link", None, lambda: self._copy(it.url)),
+                              ("Title", None, lambda: self._copy(it.title)),
+                              ("Workshop ID", None, lambda: self._copy(it.id))])])
+
+    def _pictures(self, it):
+        det = self.details.get(it.id)
+        if det is None:
+            self._load_details(it.id)
+            self.app.toast("Loading its pictures...", color=MUTED)
+            self._want_pictures = it.id
+            return
+        pics = [(u, f"{it.id}_s{i}") for i, u in enumerate(det.screenshots)]
+        if it.preview:
+            pics.insert(0, (it.preview.split("?")[0], f"{it.id}_p"))
+        PictureViewer.show(self.app, it.title, pics)
+
+    def _copy(self, text):
+        copy_text(self, text)
+        self.app.toast("Copied.", color=MUTED)
 
     def refresh_status(self):
         """Only the 'You' column / card pills: cheap enough to run while downloads report progress."""
@@ -746,7 +851,8 @@ class BrowsePage(ctk.CTkFrame):
         if icons.available() and os.path.isfile(pic):
             im = icons.load_thumb(pic, 512)
             if im is not None:
-                d.picture(icons.rounded(im, 30), key=("ws", it.id, os.path.getmtime(pic)))
+                d.picture(icons.rounded(im, 30), key=("ws", it.id, os.path.getmtime(pic)),
+                          command=lambda: self._pictures(it))
         ok = W.fits(it, gv)
         d.accent({"ok": OK, "missing": ERR}.get(kind, INFO if ok is False else ACCENT))
         d.heading(("Collection: " if it.is_collection else "") + it.title, f"by {it.author}" if it.author else "")
@@ -779,7 +885,7 @@ class BrowsePage(ctk.CTkFrame):
             missing = [(rid, n) for rid, n in det.required if rid not in have]
             if missing:
                 acts.append((f"Catch it + {len(missing)} it needs", lambda: self.app.catch_ids(
-                    [it.id] + [x for x, _ in missing]), "download", "normal"))
+                    [x for x, _ in missing] + [it.id], deps=False), "chain", "normal"))
         d.actions(acts)
         t = d.text
         rating = (W.stars(it.stars) + f"  {it.votes:,} votes") if it.stars > 0 else (
@@ -826,18 +932,21 @@ class BrowsePage(ctk.CTkFrame):
                     "\"Catch it + ...\" fetches them together.", "faint", "small")
         elif it.children and not it.is_collection:
             t.p(f"Lists {it.children} required item(s).", "faint")
-        if det.screenshots and icons.available():
-            t.h("Screenshots")
+        if det.screenshots:
+            n = len(det.screenshots)
+            t.h(f"Screenshots ({n})")
             t.p("")
             s = px(min(104, (d.inner() - 12) / 3))
-            for i, url in enumerate(det.screenshots[:6]):
-                local = os.path.join(self.app.thumbs_dir, f"{it.id}_s{i}.jpg")
-                im = icons.load_thumb(local, s) if os.path.isfile(local) else None
+            pics = [(url, f"{it.id}_s{i}") for i, url in enumerate(det.screenshots)]
+            for i, (url, key) in enumerate(pics):
+                local = os.path.join(self.app.thumbs_dir, key + ".jpg")
+                im = icons.load_thumb(local, s) if icons.available() and os.path.isfile(local) else None
                 if im is not None:
-                    t.picture(icons.rounded(im, px(8)), command=lambda u=url: webbrowser.open(u))
+                    t.picture(icons.rounded(im, px(8)), command=lambda i=i: PictureViewer.show(
+                        self.app, it.title, pics, i))
                 else:
-                    t.link(f"Picture {i + 1}   ", lambda u=url: webbrowser.open(u))
-            t.p("Click a picture to open it full size.", "faint", "small")
+                    t.link(f"Picture {i + 1}   ", lambda i=i: PictureViewer.show(self.app, it.title, pics, i))
+            t.p("Click a picture to see it full size.", "faint", "small")
         text = W.plain_description(det.description or it.short)
         if text:
             t.h("Description")
@@ -855,16 +964,22 @@ class BrowsePage(ctk.CTkFrame):
             net = N.Net()
             d = W.details(net, wid)
             if icons.available():
-                want = {f"{wid}_s{i}": url for i, url in enumerate(d.screenshots[:6])
-                        if not os.path.isfile(os.path.join(folder, f"{wid}_s{i}.jpg"))}
-                if want:
-                    icons.fetch_previews(net, want, folder)
+                want = [(f"{wid}_s{i}", url) for i, url in enumerate(d.screenshots)
+                        if not os.path.isfile(os.path.join(folder, f"{wid}_s{i}.jpg"))]
+                if want:                                   # four at a time
+                    nets = [net] + [N.Net() for _ in range(3)]
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        for i, (k, url) in enumerate(want):
+                            pool.submit(icons.fetch_previews, nets[i % 4], {k: url}, folder)
             self.app.q.put(("ws_details", wid, d))
         threading.Thread(target=work, daemon=True).start()
 
     def details_loaded(self, wid, d):
         self.details[wid] = d
         self._loading_detail = None
+        if getattr(self, "_want_pictures", None) == wid and wid in self.items:
+            self._want_pictures = None
+            self._pictures(self.items[wid])
         sel = self.selected()
         if len(sel) == 1 and sel[0].id == wid:
             self.show_detail()
@@ -876,31 +991,21 @@ class BrowsePage(ctk.CTkFrame):
             self.app.catch_ids([i.id for i in sel])
 
     def add_to_list(self, items):
-        for it in items:
-            self.app.catch_list[it.id] = it.title
-        self._render_list()
-        self.refresh_status()
+        self.app.add_to_catch_list({it.id: it.title for it in items})
         self.show_detail()
 
     def remove_from_list(self, items):
-        for it in items:
-            self.app.catch_list.pop(it.id, None)
-        self._render_list()
-        self.refresh_status()
+        self.app.remove_from_catch_list([it.id for it in items])
         self.show_detail()
 
     def clear_list(self):
-        self.app.catch_list.clear()
-        self._render_list()
-        self.refresh_status()
+        n = len(self.app.catch_list)
+        if n > 3 and not messagebox.askyesno(APP_NAME, f"Remove all {n} mods from the catch list?", parent=self.app):
+            return
+        self.app.remove_from_catch_list(list(self.app.catch_list))
 
     def catch_list(self):
-        ids = list(self.app.catch_list)
-        if ids:
-            self.app.catch_list.clear()
-            self._render_list()
-            self.app.catch_ids(ids)
-            self.refresh_status()
+        self.app.catch_from_list()
 
     def _render_list(self):
         n = len(self.app.catch_list)

@@ -91,7 +91,7 @@ def area(rel):
         if sub == "coat_of_arms":
             return "coa"
         if sub in ("interface", "cursors"):
-            return "ui"
+            return "ui" if rel.endswith(TEXT_EXT) else "graphics"     # icons are pictures, .gfx lists are UI
         return "graphics"
     if top in ("gui", "data_binding", "fonts", "notifications"):
         return "ui"
@@ -123,7 +123,7 @@ LANGS = ("english", "french", "german", "spanish", "russian", "korean", "simp_ch
          "polish", "braz_por", "portuguese", "turkish", "italian", "czech", "ukrainian")
 _LANG_WORDS = re.compile(r"\b(translation|traduc|übersetz|ubersetz|перевод|localisation|localization|русск|"
                          r"french|german|spanish|russian|korean|chinese|japanese|polish|portuguese|brazilian|"
-                         r"turkish|italian|czech|ukrainian|deutsch|español|français|中文|한국어)", re.I)
+                         r"turkish|italian|czech|ukrainian|arabic|persian|deutsch|español|français|中文|한국어|تعريب|عربي)", re.I)
 _FIX_RX = re.compile(r"\bunofficial\b|\bfix\s*-?\s*pack\b|\bbug\s*-?\s*fix(es)?\b|\bfixes\b|\bcommunity\s+patch\b"
                      r"|\bfixed?\b.*\bvanilla\b", re.I)
 _TC_RX = re.compile(r"\btotal\s+conversion\b", re.I)
@@ -136,15 +136,49 @@ _UTIL_RX = re.compile(r"\b(unlock(ed)?|cheat|instant|debug|toggle|no\s+\w+\s+lim
 
 
 class RoleResult:
-    def __init__(self, role, why, secondary, focus, attrs):
+    def __init__(self, role, why, secondary, focus, attrs, evidence=None, manual=False):
         self.role, self.why, self.secondary, self.focus, self.attrs = role, why, secondary, focus, attrs
+        self.evidence = evidence or []          # [(role id, points, reason)], strongest first
+        self.manual = manual                    # set by you (Library > Set role)
+
+    def reasons(self, rid=None, n=4):
+        """The strongest reasons for a role (the chosen one by default); the shares of the work in one
+        sentence first."""
+        rid = rid or self.role.id
+        out = self.why.split("; ") if rid == self.role.id and not self.manual and self.why else []
+        merged = any("of its work is" in x for x in out)
+        for r, pts, why in self.evidence:
+            if r == rid and why not in out and not (merged and "of its work is" in why):
+                out.append(why)
+        return out[:n]
+
+
+# Workshop categories (the author's own ticks) and the role each one points to
+TAG_ROLE = {
+    "total conversion": "total_conversion", "map": "map", "fixes": "fix", "translation": "translation",
+    "utilities": "utility", "graphics": "graphics", "portraits": "portraits", "interface": "ui", "sound": "audio",
+    "music": "audio", "balance": "balance", "events": "events", "decisions": "interactions",
+    "character interactions": "interactions", "culture": "culture", "religion": "culture",
+    "historical": "history", "alternative history": "history", "gameplay": "gameplay", "warfare": "gameplay",
+    "character focuses": "gameplay", "schemes": "gameplay", "economy": "gameplay", "military": "gameplay",
+    "submod": "submod", "overhaul": "overhaul", "framework": "framework", "cheats": "utility",
+}
+_DESC_PATCH = re.compile(r"\b(this is a )?(compatibility patch|compatch|compat patch)\b", re.I)
+_DESC_SUB = re.compile(r"\b(this is a )?sub-?mod\b|\badd-?on for\b", re.I)
+_DESC_LIB = re.compile(r"\b(framework|library) (for|that) (other )?mod", re.I)
+_DESC_TRANS = re.compile(r"\b(translation|translated|localisation|localization|перевод)\b", re.I)
 
 
 def classify(f, facts, mentions_name):
-    """f: analysis.ModFacts. facts: all ModFacts. mentions_name(text, other) -> bool.
-    Returns a RoleResult."""
+    """What kind of mod f is (f: analysis.ModFacts, facts: all of them, mentions_name(text, other) -> bool).
+
+    Every clue adds points to a role: what its files change (the most), what its files prove (a new map,
+    replaced history, light edits of the game's own files, declared dependencies, other mods' names it
+    uses), its title, its Workshop description and the categories its author ticked. The author's ticks
+    count less the more of them there are (a mod ticking ten categories says little with each), and a
+    Total conversion needs proof in the files: a tick alone never makes one. Returns a RoleResult whose
+    evidence explains the choice."""
     m = f.mod
-    tags = {t.lower() for t in m.tags}
     name = f.name
     files = f.files
     if not files:
@@ -153,8 +187,11 @@ def classify(f, facts, mentions_name):
     binary = sum(1 for r in files if not r.endswith(TEXT_EXT)) / len(files)
     script_files = sum(1 for r in files if r.startswith(("common/", "events/", "history/")))
     mostly_binary = binary >= 0.7 and script_files <= 3
+    windows = sum(1 for r in files if r.startswith("gui/"))
     for rel in files:
         a = area(rel)
+        if a == "graphics" and windows >= 5 and rel.startswith("gfx/interface/"):
+            a = "ui"                         # an interface mod's own icons belong to its windows
         weights[a] = weights.get(a, 0.0) + file_weight(f.units.get(rel, 1), rel, mostly_binary)
     total = sum(weights.values()) or 1.0
     share = {a: w / total for a, w in weights.items()}
@@ -166,74 +203,145 @@ def classify(f, facts, mentions_name):
     langs = {p.split("/")[1] for p in files if p.startswith(("localization/", "localisation/")) and p.count("/") >= 2}
     langs |= {p.split("/")[2] for p in files if p.startswith(("localization/replace/", "localisation/replace/"))
               and p.count("/") >= 3}
-    attrs = []
-    touches_checksum = any(r.startswith(CHECKSUM_TOPS) for r in files)
-    attrs.append(("achievements", not touches_checksum))
+    attrs = [("achievements", not any(r.startswith(CHECKSUM_TOPS) for r in files))]
     targets = [o for o in facts if o is not f and mentions_name(name, o)]
-    builds_on = getattr(f, "builds_on", {})              # other mod key -> number of its things this one uses
+    builds_on = getattr(f, "builds_on", {})
     used_by = getattr(f, "used_by", {})
+    desc = (getattr(f, "description", "") or "")[:1500]
+    tags = [t for t in dict.fromkeys(list(m.tags) + list(getattr(f, "ws_tags", []) or []))
+            if not re.match(r"^\d+\.\d+", t) and t.lower() != "older"]
+    ev = []
 
-    def result(rid, why):
-        sec = [BY_ID[_AREA_ROLE[a]] for a, s in ordered if s >= 0.15 and _AREA_ROLE.get(a) and _AREA_ROLE[a] != rid]
-        sec = list(dict.fromkeys(sec))[:3]
-        return RoleResult(BY_ID[rid], why, sec, focus, attrs)
+    def add(rid, pts, why):
+        if pts > 0:
+            ev.append((rid, round(pts, 2), why))
 
-    # ---- strong signals
-    tc_paths = [p for p in m.replace_paths if p.startswith(("history", "map_data", "common/landed_titles",
-                                                             "common/culture", "common/religion"))]
-    if _TC_RX.search(name) or "total conversion" in tags or (tc_paths and len(tc_paths) >= 2):
-        return result("total_conversion", "replaces the game's " + ", ".join(tc_paths[:3]) if tc_paths
-                      else "a total conversion (by its name/tags)")
-    map_core = [r for r in files if r.startswith("map_data/") and r.rsplit("/", 1)[-1] in
-                ("definition.csv", "provinces.png", "heightmap.heightmap", "default.map", "adjacencies.csv")]
-    if map_core:
-        if tc_paths or count("history/") > 50 and count("common/landed_titles/"):
-            return result("total_conversion", "new map plus its own history and titles")
-        return result("map", "changes the map itself (" + ", ".join(r.rsplit('/', 1)[-1] for r in map_core[:3]) + ")")
-    if loc_files / n_files >= 0.9 and (langs - {"english"} or _LANG_WORDS.search(name) or "translation" in tags):
-        other = sorted(langs - {"english"})
-        return result("translation", "only texts" + (f" ({', '.join(other[:3])})" if other else ""))
-    light_overrides = f.overrides >= 25 and f.overrides >= 0.5 * n_files and f.light_override_share >= 0.6
-    if _FIX_RX.search(name) and not _PATCH_RX.search(name.replace("Patch", "")) or \
-            ("fixes" in tags and light_overrides):
-        return result("fix", f"fixes the game's own files ({f.overrides} vanilla files, mostly small edits)")
-    if m.dependencies and (len(m.dependencies) >= 2 or _PATCH_RX.search(name)):
-        return result("compatch", "declares it needs " + ", ".join(f'"{d}"' for d in m.dependencies[:3]))
-    if _PATCH_RX.search(name) and len(targets) >= 1:
-        return result("compatch", "named as a patch for " + ", ".join(f'"{t.name}"' for t in targets[:2]))
-    strong_base = [k for k, n in builds_on.items() if n >= 5]
-    if len(strong_base) >= 2 and n_files <= 60:
-        return result("compatch", f"uses things defined by {len(strong_base)} other mods")
-    if m.dependencies or (targets and _SUB_RX.search(name)) or (len(strong_base) == 1 and
-                                                                 builds_on[strong_base[0]] >= 10):
-        base = m.dependencies[:1] or [t.name for t in targets[:1]] or \
-            [facts_name(facts, strong_base[0])]
-        return result("submod", f'an add-on for "{base[0]}"')
-    lib_score = share.get("script", 0)
-    if _LIB_RX.search(name) or "framework" in tags or (lib_score >= 0.6 and sum(used_by.values()) >= 10):
-        return result("framework", "shared scripted code" + (f" that {len(used_by)} other mod(s) use" if used_by else ""))
-    areas_big = [a for a, s in share.items() if s >= 0.1 and a not in ("loc", "misc")]
-    if f.overrides >= 60 or (len(areas_big) >= 5 and n_files >= 150) or "overhaul" in tags:
-        return result("overhaul", f"touches {len(areas_big)} parts of the game and replaces {f.overrides} of its files")
-    top_area, top_share = ordered[0]
-    specific = top_share >= 0.6 and top_area in ("balance", "events", "culture", "history", "portraits", "graphics")
-    if not specific and ((_UTIL_RX.search(name) and n_files <= 40) or
-                         ({"utilities", "cheats"} & tags and n_files <= 12)):
-        return result("utility", "a convenience mod (automates or unlocks something)")
-    # ---- by the biggest part of the work. Windows and pictures usually serve a feature, so a mod is
-    # only called "Interface"/"Graphics" when they are most of it or nothing else is there.
+    # ---- what its files change (the backbone): the share of the work in each part of the game
     content = {"gameplay", "interactions", "events", "culture", "history", "balance", "script", "map"}
-    has_content = any(share.get(a, 0) >= 0.2 for a in content)
+    content_share = sum(share.get(a, 0) for a in content)
+    has_content = content_share >= 0.25
+    small = 0.5 + 0.5 * min(1.0, n_files / 6)          # a mod of one or two files proves less by them
     for a, s in ordered:
         rid = _AREA_ROLE.get(a)
-        if rid in ("ui", "graphics", "audio") and s < 0.5 and has_content:
+        if not rid or s < 0.05:
             continue
-        if rid:
-            why = f"most of its work is {AREA_NAMES.get(a, a)} ({s:.0%})"
-            if rid == "gameplay" and share.get("script", 0) >= 0.4 and a == "script":
-                why = "mostly scripted code"
-            return result(rid, why)
-    return result("gameplay", "regular content")
+        pts = 10 * s * small
+        if rid in ("ui", "graphics", "audio") and s < 0.5 and has_content:
+            pts *= 0.45                      # windows and pictures usually serve a feature
+        add(rid, pts, f"{s:.0%} of its work is {AREA_NAMES.get(a, a)}")
+
+    # ---- what its files prove
+    world = ("history", "map_data", "common/landed_titles", "common/culture", "common/religion")
+    tc_paths = [p for p in m.replace_paths if p.startswith(world)]
+    map_core = [r for r in files if r.startswith("map_data/") and r.rsplit("/", 1)[-1] in
+                ("definition.csv", "provinces.png", "heightmap.heightmap", "default.map", "adjacencies.csv")]
+    tc_proof = len(tc_paths) >= 2 or (map_core and (tc_paths or count("history/") > 50
+                                                    and count("common/landed_titles/")))
+    if tc_proof:
+        add("total_conversion", 16, "replaces the game's " + ", ".join(tc_paths[:3]) if tc_paths
+            else "brings a new map with its own history and titles")
+    elif map_core:
+        add("map", 14, "changes the map itself (" + ", ".join(r.rsplit('/', 1)[-1] for r in map_core[:3]) + ")")
+    loc_share = loc_files / n_files
+    if loc_share >= 0.9:
+        other = sorted(langs - {"english"})
+        add("translation", 14, "only texts" + (f" ({', '.join(other[:3])})" if other else
+                                               " (it rewrites the game's texts)"))
+    light = f.overrides >= 25 and f.overrides >= 0.5 * n_files and f.light_override_share >= 0.6 and \
+        content_share >= 0.4                         # light edits of scripts, not of pictures or texts
+    if light:
+        add("fix", 7, f"small edits to {f.overrides} of the game's own files")
+    if m.dependencies:
+        if len(m.dependencies) >= 2:
+            add("compatch", 9, "declares it needs " + ", ".join(f'"{d}"' for d in m.dependencies[:3]))
+        else:
+            add("submod", 7, f'declares it needs "{m.dependencies[0]}"')
+    strong_base = [k for k, n in builds_on.items() if n >= 5]
+    if len(strong_base) >= 2 and n_files <= 60:
+        add("compatch", 7, f"uses things defined by {len(strong_base)} other mods")
+    elif len(strong_base) == 1 and builds_on[strong_base[0]] >= 10:
+        add("submod", 6, f'uses {builds_on[strong_base[0]]} things only "{facts_name(facts, strong_base[0])}" defines')
+    if share.get("script", 0) >= 0.6 and sum(used_by.values()) >= 10:
+        add("framework", 8, f"scripted code that {len(used_by)} other mod(s) use")
+    areas_big = [a for a, s in share.items() if s >= 0.1 and a not in ("loc", "misc")]
+    if (f.overrides >= 60 and f.overrides >= 0.25 * n_files or f.overrides >= 200) and loc_share < 0.9:
+        add("overhaul", 5 + min(4, f.overrides / 60), f"replaces {f.overrides} of the game's files")
+    if len(areas_big) >= 5 and n_files >= 150:
+        add("overhaul", 5, f"changes {len(areas_big)} parts of the game")
+
+    # ---- its title
+    if _TC_RX.search(name):
+        add("overhaul" if not tc_proof else "total_conversion", 3, "calls itself a total conversion")
+    if _FIX_RX.search(name) and not _PATCH_RX.search(name.replace("Patch", "")):
+        add("fix", 5 + (3 if light else 0), "a fix by its name")
+    if _LANG_WORDS.search(name) and loc_share >= 0.5:
+        add("translation", 6, "a translation by its name")
+    if _PATCH_RX.search(name):
+        if targets:
+            add("compatch", 7, "named as a patch for " + ", ".join(f'"{t.name}"' for t in targets[:2]))
+        elif m.dependencies:
+            add("compatch", 4, "named as a patch")
+    if targets and _SUB_RX.search(name):
+        add("submod", 5, f'named as an add-on for "{targets[0].name}"')
+    if _LIB_RX.search(name):
+        add("framework", 5, "a framework by its name")
+    specific = ordered[0][1] >= 0.6 and ordered[0][0] in ("balance", "events", "culture", "history", "portraits",
+                                                          "graphics")
+    if _UTIL_RX.search(name) and n_files <= 40 and not specific:
+        add("utility", 4, "a convenience by its name")
+
+    # ---- its Workshop description
+    if desc:
+        if _DESC_PATCH.search(desc[:400]) and (targets or m.dependencies or strong_base):
+            add("compatch", 4, "its description calls it a compatibility patch")
+        if _DESC_SUB.search(desc[:400]) and (targets or m.dependencies or strong_base):
+            add("submod", 3, "its description calls it a submod")
+        if _DESC_TRANS.search(desc[:300]) and loc_share >= 0.6:
+            add("translation", 4, "its description calls it a translation")
+        if _DESC_LIB.search(desc[:600]):
+            add("framework", 3, "its description calls it a framework for other mods")
+
+    # ---- the categories its author ticked: worth less the more there are
+    if tags:
+        each = 3.0 if len(tags) <= 2 else 6.0 / len(tags)
+        for t in tags:
+            rid = TAG_ROLE.get(t.lower())
+            if not rid:
+                continue
+            pts = each
+            if rid == "total_conversion" and not tc_proof:
+                continue                     # never on a tick alone (see below)
+            if rid == "map" and not map_core:
+                continue                     # "Map" is often ticked by mods that only touch map graphics
+            if rid == "translation" and loc_share < 0.6:
+                continue
+            if rid == "fix" and not light:
+                pts *= 0.5
+            if rid in ("utility", "overhaul") and len(tags) > 4:
+                pts *= 0.5
+            add(rid, pts, f"its author ticked \"{t}\"" + (f" (one of {len(tags)})" if len(tags) > 3 else ""))
+
+    # ---- decide
+    score = {}
+    for rid, pts, _ in ev:
+        score[rid] = score.get(rid, 0.0) + pts
+    if not score:
+        return RoleResult(BY_ID["gameplay"], "regular content", [], focus, attrs, [("gameplay", 1, "regular content")])
+    best = max(score, key=lambda r: (score[r], -BY_ID[r].rank))
+    ev.sort(key=lambda e: (e[0] != best, -score.get(e[0], 0), -e[1]))
+    sec = [BY_ID[r] for r, v in sorted(score.items(), key=lambda kv: -kv[1])
+           if r != best and v >= 0.4 * score[best]][:3]
+    notes = []
+    if any(t.lower() == "total conversion" for t in tags) and not tc_proof:
+        notes.append(("note", 0, "its author ticks \"Total Conversion\", but its files don't replace the game "
+                                 "world, so it isn't treated as one"))
+    parts = [(a, sh) for a, sh in ordered if _AREA_ROLE.get(a) == best and sh >= 0.05]
+    reasons = []
+    if parts:                         # "29% of its work is mechanics and scripted code"
+        reasons.append(f"{sum(sh for _, sh in parts):.0%} of its work is " +
+                       " and ".join(AREA_NAMES.get(a, a) for a, _ in parts))
+    reasons += [why for r, pts, why in ev if r == best and "of its work is" not in why][:2 if not parts else 1]
+    return RoleResult(BY_ID[best], "; ".join(reasons) or "regular content", sec, focus, attrs, ev + notes)
 
 
 def facts_name(facts, key):

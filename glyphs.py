@@ -340,6 +340,69 @@ def _log(p):
     p.line((8, 16), (13, 16))
 
 
+def _scan(p):                           # a folder with a magnifier: look through the mod folder again
+    p.line((2.5, 5.5), (8, 5.5), (10, 8), (19.5, 8), (19.5, 11))
+    p.line((2.5, 5.5), (2.5, 18.5), (11, 18.5))
+    p.circle(16, 15.5, 3.6)
+    p.line((18.6, 18.1), (21.2, 20.7))
+
+
+def _update(p):                         # a circling arrow around an up arrow: newer versions
+    p.arc(12, 12, 8.5, 200, 520)
+    a = math.radians(160)
+    p.head(12 + 8.5 * math.cos(a), 12 + 8.5 * math.sin(a), 0.35, -1, length=3.6)
+    p.line((12, 16), (12, 8))
+    p.line((9, 11), (12, 8), (15, 11))
+
+
+def _bug(p):                            # crashes
+    p.rect(7.5, 8, 9, 12, r=4.5)
+    p.line((12, 8), (12, 20))
+    p.arc(12, 8, 3, 180, 360)
+    for y in (11, 15):
+        p.line((7.5, y), (4, y - 1))
+        p.line((16.5, y), (20, y - 1))
+    p.line((7.5, 18.5), (4.5, 20.5))
+    p.line((16.5, 18.5), (19.5, 20.5))
+
+
+def _broom(p):                          # clean-up
+    p.line((19.5, 3.5), (12, 11))
+    p.poly((9.5, 9.5), (14.5, 14.5), (10, 21), (3, 14))
+    p.line((7, 17.5), (9.5, 15))
+
+
+def _image(p):                          # a picture
+    p.rect(3, 4.5, 18, 15, r=2)
+    p.line((5.5, 17), (10, 11.5), (13.5, 15), (15.5, 13), (18.5, 17))
+    p.circle(15.5, 8.5, 1.6, fill=True)
+
+
+def _chain(p):                          # needs other mods
+    p.rect(2.5, 8.5, 10, 7, r=3.5)
+    p.rect(11.5, 8.5, 10, 7, r=3.5)
+
+
+def _palette(p):                        # appearance
+    p.line((12, 3.5), (8, 3.8), (4.5, 7), (3.5, 12), (5, 17), (9, 20), (13, 20.5), (14.5, 18.5), (13.5, 16),
+           (14.5, 14), (18, 14), (20.5, 11.5), (19.5, 7), (16, 4.3), close=True)
+    for x, y in ((8, 9), (12, 7), (16.5, 9), (7.5, 14)):
+        p.circle(x, y, 1.4, fill=True)
+
+
+def _key(p):                            # accounts
+    p.circle(8, 12, 4.5)
+    p.line((12.5, 12), (21, 12))
+    p.line((18, 12), (18, 15.5))
+    p.line((21, 12), (21, 15))
+
+
+def _about(p):                          # a crest
+    p.line((12, 3), (19.5, 6), (19, 13), (12, 21), (5, 13), (4.5, 6), close=True)
+    p.line((12, 8), (12, 15))
+    p.line((9, 10.5), (15, 10.5))
+
+
 ICONS = {
     "search": _search, "download": _download, "upload": _upload, "browse": _globe, "catch": _download,
     "library": _library, "playsets": _playsets, "conflicts": _alert, "alert": _alert, "play": _play,
@@ -349,6 +412,8 @@ ICONS = {
     "top": _top, "bottom": _bottom, "sparkle": _sparkle, "pause": _pause, "stop": _stop, "list": _list,
     "grid": _grid, "power": _power, "copy": _copy, "filter_off": _filter_off, "layers": _layers, "star": _star,
     "bars": _bars, "wand": _wand, "steam": _steam, "log": _log, "resume": _play,
+    "scan": _scan, "update": _update, "bug": _bug, "broom": _broom, "image": _image, "chain": _chain,
+    "retry": _refresh, "crash": _bug, "palette": _palette, "key": _key, "crest": _about,
 }
 
 

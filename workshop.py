@@ -14,6 +14,7 @@ No account or API key is needed for any of this.
 """
 import html
 import json
+import math
 import re
 import time
 import urllib.parse
@@ -206,6 +207,82 @@ def browse(net, appid, sort="trend", days=7, search="", tags=(), excluded=(), pa
     return p
 
 
+# ------------------------------------------------------------------ best matches first
+RANKED_PAGES = 3            # a search is ranked across this many of Steam's pages (90 results)
+
+
+def _words(text):
+    return [w for w in re.findall(r"[\w']+", (text or "").lower()) if w]
+
+
+def match_score(item, search):
+    """How well an item matches the search words: the title counts most, then the author, then the
+    description. Higher is better; 0 means only Steam's own matching found it."""
+    words = _words(search)
+    if not words:
+        return 0
+    phrase = " ".join(words)
+    title = " ".join(_words(item.title))
+    tw = set(title.split())
+    score = 0.0
+    if title == phrase:
+        score += 1000
+    elif title.startswith(phrase):
+        score += 700
+    elif phrase in title:
+        score += 500
+    hit = sum(1 for w in words if w in tw)
+    part = sum(1 for w in words if w not in tw and any(t.startswith(w) for t in tw))
+    score += 300 * hit / len(words) + 120 * part / len(words)
+    if hit:                          # a title that is mostly the search beats one that adds a lot to it
+        score -= min(200, 30 * max(0, len(tw) - len(words)))
+        score += 25 * math.log10(1 + item.subs)          # and the original beats its copies
+    author = " ".join(_words(item.author))
+    if author and (phrase == author or phrase in author):
+        score += 250
+    elif author:
+        score += 80 * sum(1 for w in words if w in author.split()) / len(words)
+    desc = set(_words(item.short)[:400])
+    score += 40 * sum(1 for w in words if w in desc) / len(words)
+    return score
+
+
+def rank(items, search):
+    """Items in best-match order (ties keep Steam's order, then the most subscribed first)."""
+    order = {it.id: i for i, it in enumerate(items)}
+    return sorted(items, key=lambda it: (-match_score(it, search), order[it.id] // 10, -it.subs))
+
+
+def browse_ranked(net, appid, sort, days, search, tags, excluded, collections, stop=None):
+    """The first RANKED_PAGES of Steam's results for a search, ranked together and cut back into pages
+    of 30: [Page, Page, Page]. Later pages come from Steam as they are."""
+    got, first = [], None
+    for n in range(1, RANKED_PAGES + 1):
+        p = browse(net, appid, sort, days, search, tags, excluded, n, collections)
+        if first is None:
+            first = p
+        if p.error:
+            if n == 1:
+                return [p]
+            break
+        got += p.items
+        if n >= max(1, p.pages):
+            break
+    seen, items = set(), []
+    for it in got:
+        if it.id not in seen:
+            seen.add(it.id)
+            items.append(it)
+    items = rank(items, search)
+    out = []
+    for i in range(0, max(1, len(items)), 30):
+        p = Page()
+        p.items, p.total, p.pages, p.page = items[i:i + 30], first.total, first.pages, len(out) + 1
+        p.tag_groups = first.tag_groups
+        out.append(p)
+    return out
+
+
 # ------------------------------------------------------------------ one item in depth
 class Details:
     def __init__(self):
@@ -234,8 +311,11 @@ def details(net, item_id):
             for rid, name in re.findall(r'filedetails/\?id=(\d+)"[^>]*>\s*<div class="requiredItem">\s*(.*?)\s*</div>',
                                         box.group(1), re.S):
                 d.required.append((rid, html.unescape(" ".join(re.sub(r"<[^>]+>", " ", name).split()))))
-        shots = re.findall(r"ShowEnlargedImagePreview\(\s*'([^']+)'", page)
-        d.screenshots = list(dict.fromkeys(s.split("?")[0] for s in shots))[:8]
+        # every screenshot sits in the page's picture strip (the enlarged-view script names only the first)
+        shots = re.findall(r'highlight_strip_screenshot"[^>]*>\s*<img src="([^"]+)"', page)
+        shots = shots or re.findall(r"ShowEnlargedImagePreview\(\s*'([^']+)'", page)
+        d.screenshots = list(dict.fromkeys(s.split("?")[0] for s in shots if "steamusercontent" in s
+                                           or "steamuserimages" in s))[:12]
     try:
         import sources as S
         det = S.steam_details(net, [item_id]).get(item_id) or {}

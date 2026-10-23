@@ -1,7 +1,6 @@
-<<<<<<< HEAD
 # Adromedary's Paradoxical Launcher
 
-*Version 1.0 · by Adromedary*
+*Version 2.0 · by Adromedary*
 
 A mod manager and launcher for Paradox games: **Crusader Kings III**, **Europa Universalis IV / V**,
 **Stellaris**, **Hearts of Iron IV**, **Victoria 3** and **Imperator: Rome**.
@@ -12,6 +11,24 @@ No Paradox launcher needed.
 
 ![Browse, panel view](docs/screenshots/browse-panels.png)
 
+## New in 2.0
+
+* **Conflicts you can act on**: what you'll notice in game, what solves it and how sure the app is;
+  new checks for defines, interface pieces and objects a mod leaves out; compatches you have are
+  recognised, others searched for on the Workshop; a **compatch report** with a ready AI prompt.
+* **Auto-sort 2**: says how sure it is of every move, puts compatches after both mods they patch, fix
+  packs on top and interface mods near the bottom, optionally older-version mods first.
+* **Playset rules** (First, Early, Late, Last, before / after a mod), a playset filter in Library, and
+  roles you can see the reasons for and change.
+* Ranked Workshop search, every screenshot in an in-app viewer, a kept catch list with retries, a
+  dependency prompt, right-click menus everywhere, a storage limit for cached files.
+* A **Crashes** tab: after a crash it names the mods most likely to blame with the evidence (errors traced
+  to each mod's files, renamed or missing things, conflicts), compares every crash with the games that
+  worked, and finds the culprit step by step.
+* Redesigned **Settings**, and a new **Colorful** palette.
+
+Full list: [CHANGELOG.md](CHANGELOG.md).
+
 ## What it does
 
 | Tab | |
@@ -19,14 +36,19 @@ No Paradox launcher needed.
 | **Browse** | Your game's Steam Workshop: search, sort (trending, popular, top rated, newest, recently updated), category filters (must have / hide), game-version fit, mods or collections. A list or big picture panels. Each mod shows its pictures, description, the mods it needs and whether you already have it. Catch one with a double-click; it downloads while you keep browsing. |
 | **Catch** | Downloads mods and whole collections through a chain of sites (Steam, SkyMods, mod.io, Thunderstore, ModDB, GitHub, steamworkshop.download) and installs them into the game's mod folder. Pause and resume, even across restarts. Mods caught during a run start right after it. |
 | **Library** | Every installed mod with its picture, a role badge (fix pack, overhaul, map, events, interface... 20 kinds), shared files, version notes and Workshop updates. |
-| **Playsets** | Named mod lists in load order. Drag to reorder, undo / redo, your own "load after" rules, and **Auto-sort**, which works out the best order from the mods' files, what they use from each other and their Workshop pages. |
-| **Conflicts** | Everything that can go wrong in the active playset, from "these don't work together" to harmless, each explained with what happens in game and what to do. |
+| **Playsets** | Named mod lists in load order. Drag to reorder, undo / redo, your own "load after" rules, and **Auto-sort**, which works out the best order from the mods' files, what they use from each other and their Workshop pages, saying how sure it is of every move. |
+| **Conflicts** | Everything that can go wrong in the active playset, from "these don't work together" to harmless, each explained with what happens in game and what solves it. Finds compatches on the Workshop and writes compatch reports. |
+| **Crashes** | After a crash: what the game was doing, the mods most likely to blame (Likely / Possible, each with its evidence from the error log, conflicts, versions and your crash history: mods that were in a game that worked are cleared), a step-by-step culprit hunt on a copy of your playset, and crash reports for an AI chat or mod authors. |
 | **Play** | Writes the playset into the game's load file and starts the game the way the Paradox launcher does. |
+
+Two palettes, each in light and dark: **Classic** (cool greys and blue) and **Colorful** (warm
+parchment and royal tones, every tab in its own colour, a heraldic ribbon under the top bar).
 
 | | |
 |---|---|
 | ![Library](docs/screenshots/library.png) | ![Playsets, dark theme](docs/screenshots/playsets-dark.png) |
 | ![Conflicts](docs/screenshots/conflicts.png) | ![Browse, list view](docs/screenshots/browse-list.png) |
+| ![Colorful palette](docs/screenshots/colorful.png) | ![Settings](docs/screenshots/settings.png) |
 
 ## Getting started
 
@@ -80,11 +102,16 @@ names it defines and uses, its texts, events and on-actions. From that come:
 * **Conflicts**, by severity: critical (declared incompatible, two total conversions, a missing
   dependency, the same mod twice), high (duplicate event IDs, overwritten on-action effects, the same
   new name used for different things, two mods replacing one window), medium (both change the same
-  objects in differently named files: only a compatch keeps both), low and info.
+  objects, defines or interface pieces in differently named files: only a compatch keeps both), low
+  and info. Each says what you'll notice in game, what solves it and how sure it is. Compatches you
+  have are recognised; others can be searched for on the Workshop, and a **compatch report** (Markdown,
+  with both mods' versions side by side and a ready prompt for an AI chat) helps you make one.
 * **Auto-sort**: a weighted ordering of your rules, declared dependencies, compatch / add-on names,
   "load after X" notes on Workshop pages, merged files, mods building on others, and the real cost of
-  each shared-file clash. Mods that share nothing keep your order. You see a preview with the reason
-  for every move before anything changes.
+  each shared-file clash; recognised compatches after both mods they patch; fix packs near the top and
+  interface mods near the bottom; optionally mods for older game versions first. Mods that share
+  nothing keep your order. You see a preview with the reason for every move, and how sure it is,
+  before anything changes.
 
 ### Play
 The playset's mods go, in order, into `Documents\Paradox Interactive\<game>\dlc_load.json`
@@ -101,8 +128,10 @@ install folder is found through Steam and GOG, or set in Settings > Games.
 | `installed.json` | what was installed from where |
 | `updates.json` | the last update check |
 | `not_found.txt` | mods no site had, with each site's reason |
+| `catch_list.json` | your catch list |
+| `crash_history.json` | every crash and every game that worked, with their mods (for the Crashes tab) |
 | `steamcmd\` | Valve's downloader |
-| `.work\` | the resume queue and partial downloads, backups, cached Workshop pages and pictures, the game's definitions (once per version), `errors.log` |
+| `.work\` | the resume queue and partial downloads, backups, cached Workshop pages, pictures and screenshots (cleared when they pass your limit, Settings > Storage), the game's definitions (once per version), `errors.log` |
 
 ## Build
 
@@ -119,49 +148,24 @@ The result is `dist\ParadoxicalLauncher.exe`.
 
 | File | |
 |---|---|
-| `paradoxical_launcher.py` | main window, settings, help, welcome, event loop |
-| `gui_browse.py`, `gui_catch.py`, `gui_library.py`, `gui_playsets.py`, `gui_conflicts.py` | the tabs |
-| `gui_common.py`, `glyphs.py`, `icons.py`, `cards.py`, `appicon.py` | look: colours, shared widgets (tabs, detail panels, dividers, tips), drawn icons, pictures, Browse cards, app icon |
+| `paradoxical_launcher.py` | main window, settings, help, What's new, welcome, event loop |
+| `gui_browse.py`, `gui_catch.py`, `gui_library.py`, `gui_playsets.py`, `gui_conflicts.py`, `gui_crash.py` | the tabs |
+| `gui_common.py`, `gui_viewer.py`, `glyphs.py`, `icons.py`, `cards.py`, `appicon.py` | look: the two palettes, shared widgets (tabs, detail panels, dividers, tips, right-click menus), the picture viewer, drawn icons, pictures, Browse cards, app icon |
 | `workshop.py` | reading the Steam Workshop (browse pages, item details) |
 | `engine.py`, `sources.py`, `net.py`, `installer.py`, `browser_helper.py` | downloading and installing |
 | `modscan.py`, `script.py`, `analysis.py`, `roles.py`, `loadorder.py` | reading mods, conflicts, roles, Auto-sort |
-| `launcher.py`, `profiles.py`, `updates.py`, `versions.py` | games, playsets, updates, versions |
+| `compat.py`, `report.py` | finding compatches on the Workshop, compatch reports |
+| `crash.py` | crash analysis: reading crash folders and logs, suspects, the culprit hunt, crash reports |
+| `launcher.py`, `profiles.py`, `updates.py`, `versions.py`, `storage.py` | games, playsets, updates, versions, cached-file clean-up |
 | `help_text.py` | the Help window's text |
 
 ## Notes
 
+* Developed and tested with **Crusader Kings III**. The other games use the same mod layout and should
+  work; Victoria 3 and Europa Universalis V also describe mods in a newer `metadata.json` file, which
+  the app doesn't read yet.
 * SkyMods and steamworkshop.download re-host Workshop content without the creators' involvement;
   using them may conflict with Steam's terms. They can be switched off in Settings.
 * Nexus Mods can't be automated (it blocks automated access; its download API needs Premium).
 * If Steam changes its Workshop page, Browse may stop working until the app is updated; Catch keeps
   working with links.
-=======
-## Adromedary's Paradoxical Launcher
-
-A mod manager and launcher for Crusader Kings III, Europa Universalis IV,
-Stellaris, Hearts of Iron IV, and Imperator: Rome.
-
-### Highlights
-- **Browse** the game's Steam Workshop inside the app: search, categories, game-version fit,
-  required mods, screenshots, list or picture-panel view.
-- **Catch** mods and whole collections; downloads run in parallel and resume after restarts.
-- **Library** shows every installed mod with a role badge (overhaul, map, fix pack, interface...),
-  shared files, version notes and Workshop updates.
-- **Playsets** with drag-and-drop load order, undo / redo, your own rules and **Auto-sort**,
-  which explains every move before applying it.
-- **Conflicts** lists everything that can go wrong in a playset, by severity, in plain words,
-  with what happens in game and what to do.
-- **Play** starts the game with your playset directly. No Paradox launcher needed.
-- Light / dark themes, remembered panel sizes, works at Windows display scaling up to 150 %.
-
-### Install
-1. Download `ParadoxicalLauncher.exe` below and put it in a folder of its own
-   (it keeps its settings next to itself).
-2. Run it. It asks which game you play and whether you own it on Steam.
-
-### Notes
-- The exe isn't code-signed, so Windows SmartScreen may show "Windows protected your PC".
-  Click **More info → Run anyway**. Some antivirus programs flag PyInstaller apps by mistake;
-  the full source is here if you'd rather build it yourself (`build.bat`).
-- Your playsets and the game's `dlc_load.json` are backed up before anything is written.
->>>>>>> 06ed745328e604da6950aac236ed1407fc7766e0

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo === Adromedary's Paradoxical Launcher 1.0: building the .exe ===
+echo === Adromedary's Paradoxical Launcher 2.0: building the .exe ===
 python --version >nul 2>&1
 if errorlevel 1 (
   echo Python was not found. Install it from https://www.python.org/downloads/ and tick "Add python.exe to PATH".
@@ -21,10 +21,12 @@ if errorlevel 1 (
   echo.
 )
 
-python make_icon.py
-if errorlevel 1 goto :fail
+if not exist icon.ico (
+  echo icon.ico is missing: it must sit next to build.bat.
+  goto :fail
+)
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name ParadoxicalLauncher --icon icon.ico ^
-  --collect-all customtkinter --collect-all curl_cffi --collect-all webview --collect-data certifi ^
+  --add-data "icon.ico;." --collect-all customtkinter --collect-all curl_cffi --collect-all webview --collect-data certifi ^
   paradoxical_launcher.py
 if errorlevel 1 goto :fail
 echo.
