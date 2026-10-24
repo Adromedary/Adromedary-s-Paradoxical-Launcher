@@ -390,6 +390,26 @@ def _tar_tool():
     return shutil.which("bsdtar")
 
 
+def _extract_other(path, dest):
+    """.rar / .7z on Linux and macOS without bsdtar: 7-Zip or unrar, if one is installed. True when done."""
+    low = path.lower()
+    tries = []
+    for seven in ("7z", "7zz", "7za"):
+        if shutil.which(seven):
+            tries.append([seven, "x", "-y", f"-o{dest}", path])
+    if low.endswith(".rar") and shutil.which("unrar"):
+        tries.append(["unrar", "x", "-o+", path, dest + os.sep])
+    if low.endswith(".rar") and shutil.which("unar"):
+        tries.append(["unar", "-f", "-o", dest, path])
+    for cmd in tries:
+        try:
+            if subprocess.run(cmd, capture_output=True, timeout=1800).returncode == 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def unpack(path, dest):
     """Extract an archive into dest and delete it. .zip in Python, .rar/.7z through libarchive's tar."""
     low = path.lower()
@@ -412,7 +432,19 @@ def unpack(path, dest):
                     shutil.copyfileobj(src, out)
         os.remove(path)
         return f"extracted {len(names)} entries"
-    if low.endswith((".rar", ".7z", ".tar", ".tar.gz", ".tgz")):
+    if low.endswith((".tar", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2")):
+        import tarfile
+        try:
+            with tarfile.open(path) as t:
+                base = os.path.normpath(dest)
+                safe = [m for m in t.getmembers() if (m.isfile() or m.isdir()) and
+                        os.path.normpath(os.path.join(dest, m.name)).startswith(base + os.sep)]
+                t.extractall(dest, members=safe)
+            os.remove(path)
+            return f"extracted {os.path.basename(path)}"
+        except (tarfile.TarError, OSError) as e:
+            raise SourceError(f"could not extract {os.path.basename(path)} ({e})")
+    if low.endswith((".rar", ".7z")):
         tool = _tar_tool()
         if tool:
             r = subprocess.run([tool, "-xf", path, "-C", dest], capture_output=True,
@@ -420,5 +452,9 @@ def unpack(path, dest):
             if r.returncode == 0:
                 os.remove(path)
                 return f"extracted {os.path.basename(path)}"
-        raise SourceError(f"could not extract {os.path.basename(path)} (needs Windows 10 or newer)")
+        if not IS_WIN and _extract_other(path, dest):
+            os.remove(path)
+            return f"extracted {os.path.basename(path)}"
+        raise SourceError(f"could not extract {os.path.basename(path)} (" + (
+            "needs Windows 10 or newer" if IS_WIN else "install libarchive-tools (bsdtar), 7-Zip (7z) or unrar") + ")")
     return f"kept {os.path.basename(path)}"

@@ -35,21 +35,21 @@ class LauncherError(Exception):
 # Documents folder name -> what we know about the game
 GAMES = {
     "Crusader Kings III": {"appid": "1158310", "id": "ck3", "load": "dlc_load.json",
-                           "names": ["Crusader Kings III", "Crusader Kings 3"], "exe": ["binaries/ck3.exe"]},
+                           "names": ["Crusader Kings III", "Crusader Kings 3"], "exe": ["binaries/ck3.exe", "binaries/ck3"]},
     "Stellaris": {"appid": "281990", "id": "stellaris", "load": "dlc_load.json",
-                  "names": ["Stellaris"], "exe": ["stellaris.exe"]},
+                  "names": ["Stellaris"], "exe": ["stellaris.exe", "stellaris"]},
     "Hearts of Iron IV": {"appid": "394360", "id": "hoi4", "load": "dlc_load.json",
-                          "names": ["Hearts of Iron IV", "Hearts of Iron 4"], "exe": ["hoi4.exe"]},
+                          "names": ["Hearts of Iron IV", "Hearts of Iron 4"], "exe": ["hoi4.exe", "hoi4"]},
     "Europa Universalis IV": {"appid": "236850", "id": "eu4", "load": "dlc_load.json",
-                              "names": ["Europa Universalis IV", "Europa Universalis 4"], "exe": ["eu4.exe"]},
+                              "names": ["Europa Universalis IV", "Europa Universalis 4"], "exe": ["eu4.exe", "eu4"]},
     "Imperator": {"appid": "859580", "id": "imperator", "load": "dlc_load.json",
-                  "names": ["Imperator: Rome", "Imperator Rome", "Imperator"], "exe": ["binaries/imperator.exe"]},
+                  "names": ["Imperator: Rome", "Imperator Rome", "Imperator"], "exe": ["binaries/imperator.exe", "binaries/imperator"]},
     "Victoria 3": {"appid": "529340", "id": "victoria3", "load": "content_load.json",
-                   "names": ["Victoria 3", "Victoria III"], "exe": ["binaries/victoria3.exe"]},
+                   "names": ["Victoria 3", "Victoria III"], "exe": ["binaries/victoria3.exe", "binaries/victoria3"]},
     "Europa Universalis V": {"appid": "3450310", "id": "eu5", "load": "content_load.json",
-                             "names": ["Europa Universalis V", "Europa Universalis 5"], "exe": ["binaries/eu5.exe"]},
+                             "names": ["Europa Universalis V", "Europa Universalis 5"], "exe": ["binaries/eu5.exe", "binaries/eu5"]},
     "Crusader Kings II": {"appid": "203770", "id": "ck2", "load": None,
-                          "names": ["Crusader Kings II", "Crusader Kings 2"], "exe": ["CK2game.exe"]},
+                          "names": ["Crusader Kings II", "Crusader Kings 2"], "exe": ["CK2game.exe", "ck2"]},
 }
 
 
@@ -98,18 +98,33 @@ def _reg_subkeys(root, path, view=0):
     return out
 
 
-def steam_libraries():
-    """Steam library folders (from the registry and libraryfolders.vdf)."""
-    if not IS_WIN:
-        return []
-    import winreg
+def steam_roots():
+    """Where Steam itself is installed (registry on Windows; the usual places on Linux and macOS,
+    including the Flatpak and Snap versions)."""
     roots = []
-    for hive, path, name in ((winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
-                             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
-                             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath")):
-        v = _reg_values(hive, path).get(name)
-        if v and os.path.isdir(v):
-            roots.append(os.path.normpath(v))
+    if IS_WIN:
+        import winreg
+        for hive, path, name in ((winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+                                 (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+                                 (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath")):
+            v = _reg_values(hive, path).get(name)
+            if v and os.path.isdir(v):
+                roots.append(os.path.normpath(v))
+    else:
+        h = os.path.expanduser("~")
+        for p in (os.path.join(h, ".steam", "steam"), os.path.join(h, ".steam", "root"),
+                  os.path.join(h, ".local", "share", "Steam"),
+                  os.path.join(h, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),
+                  os.path.join(h, "snap", "steam", "common", ".local", "share", "Steam"),
+                  os.path.join(h, "Library", "Application Support", "Steam")):
+            if os.path.isdir(os.path.join(p, "steamapps")):
+                roots.append(os.path.realpath(p))
+    return list(dict.fromkeys(roots))
+
+
+def steam_libraries():
+    """Steam library folders (Steam's own folder and the ones in libraryfolders.vdf)."""
+    roots = steam_roots()
     libs = []
     for r in roots:
         libs.append(r)
@@ -117,9 +132,10 @@ def steam_libraries():
         try:
             with open(vdf, encoding="utf-8", errors="replace") as f:
                 for p in re.findall(r'"path"\s+"([^"]+)"', f.read()):
-                    libs.append(os.path.normpath(p.replace("\\\\", "\\")))
+                    libs.append(os.path.normpath(p.replace("\\\\", "\\") if IS_WIN else p))
         except OSError:
             pass
+    libs = [l if IS_WIN else os.path.realpath(l) for l in libs]
     return list(dict.fromkeys(l for l in libs if os.path.isdir(l)))
 
 
@@ -212,14 +228,19 @@ def game_exe(game, install):
     if s.get("exePath"):
         exe = os.path.normpath(os.path.join(install, "launcher", s["exePath"]))
         args = [a for a in s.get("exeArgs", []) if isinstance(a, str)]
+    if not IS_WIN and exe.lower().endswith(".exe"):
+        exe = ""                                       # a Windows path in a native copy's settings: look again
     if not exe or not os.path.isfile(exe):
-        for cand in game_info(game).get("exe", []):
+        cands = game_info(game).get("exe", [])
+        if not IS_WIN:                                 # the native game first; a Windows copy runs through Proton
+            cands = sorted(cands, key=lambda c: c.lower().endswith(".exe"))
+        for cand in cands:
             p = os.path.join(install, cand)
             if os.path.isfile(p):
                 exe = p
                 break
     if not exe or not os.path.isfile(exe):
-        raise LauncherError(f"couldn't find the game's .exe in {install}")
+        raise LauncherError(f"couldn't find the game's program in {install}")
     return exe, args, s.get("version", ""), s.get("distPlatform", "")
 
 
@@ -311,8 +332,28 @@ def write_load_file(game, data_dir, mod_keys, backup_dir):
 
 # ================================================================== processes
 def running(image):
-    """Is a program with this .exe name running? (Windows; False elsewhere)"""
+    """Is a program with this name running? ('steam.exe' also finds 'steam' on Linux and macOS.)"""
     if not IS_WIN:
+        want = os.path.splitext(image)[0].lower() if image.lower().endswith(".exe") else image.lower()
+        try:
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as f:
+                        first = f.read().split(b"\0", 1)[0].decode("utf-8", "replace")
+                except OSError:
+                    continue
+                name = os.path.basename(first.replace("\\", "/")).lower()
+                if name in (want, want + ".exe", want + ".sh"):
+                    return True
+        except OSError:
+            pass
+        if sys.platform == "darwin":
+            try:
+                return subprocess.run(["pgrep", "-x", want], capture_output=True, timeout=10).returncode == 0
+            except Exception:
+                return False
         return False
     try:
         out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"], capture_output=True,
@@ -326,7 +367,28 @@ def launcher_running():
     return running("dowser.exe") or running("Paradox Launcher.exe")
 
 
-def start_game(exe, args, extra=()):
+def proton_copy(exe):
+    """A Windows copy of the game on Linux / macOS: it has to start through Steam (Proton)."""
+    return not IS_WIN and exe.lower().endswith(".exe")
+
+
+def start_game(exe, args, extra=(), appid=""):
+    if proton_copy(exe):
+        steam = shutil.which("steam") or shutil.which("flatpak") and "flatpak"
+        if not steam or not appid:
+            raise LauncherError("This is the Windows copy of the game (Steam Play / Proton). Start it from Steam: "
+                                "the mod list is already written for it.")
+        cmd = (["flatpak", "run", "com.valvesoftware.Steam"] if steam == "flatpak" else [steam]) + \
+            ["-applaunch", appid] + list(args) + list(extra)
+        try:
+            return subprocess.Popen(cmd, close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            raise LauncherError(f"couldn't ask Steam to start the game ({e})")
+    if not IS_WIN and not os.access(exe, os.X_OK):
+        try:
+            os.chmod(exe, os.stat(exe).st_mode | 0o111)
+        except OSError:
+            pass
     try:
         return subprocess.Popen([exe] + list(args) + list(extra), cwd=os.path.dirname(exe),
                                 close_fds=True)

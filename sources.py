@@ -147,6 +147,84 @@ def game_name(net, app_id):
 
 
 # ------------------------------------------------------------------ result type
+
+TERMINALS = (("x-terminal-emulator", ["-e"]), ("gnome-terminal", ["--"]), ("konsole", ["-e"]),
+             ("xfce4-terminal", ["-x"]), ("mate-terminal", ["-x"]), ("tilix", ["-e"]), ("kitty", []),
+             ("alacritty", ["-e"]), ("wezterm", ["start", "--"]), ("foot", []), ("xterm", ["-e"]))
+
+
+class _TerminalRun:
+    """SteamCMD in a terminal window on Linux (it asks for the password and Steam Guard code there).
+    Terminals often hand the window to a server and return at once, so the end is seen through a marker
+    file the wrapped command writes; poll / wait / kill work like a Popen's."""
+
+    def __init__(self, cmd, work):
+        term = next(((t, a) for t, a in TERMINALS if shutil.which(t)), None)
+        if term is None:
+            raise OSError("no terminal program found (install xterm, or leave the Steam account name empty)")
+        os.makedirs(work, exist_ok=True)
+        self.done = os.path.join(work, "steamcmd.done")
+        self.pidf = os.path.join(work, "steamcmd.pid")
+        for f in (self.done, self.pidf):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        import shlex
+        inner = (f"echo $$ > {shlex.quote(self.pidf)}; " + " ".join(shlex.quote(c) for c in cmd) +
+                 f"; echo $? > {shlex.quote(self.done)}")
+        self.term = subprocess.Popen([term[0]] + term[1] + ["sh", "-c", inner], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+        self.started = time.time()
+        self.returncode = None
+
+    def poll(self):
+        if self.returncode is None and os.path.isfile(self.done):
+            try:
+                self.returncode = int(open(self.done).read().strip() or 0)
+            except (OSError, ValueError):
+                self.returncode = 0
+        if self.returncode is None and self.term.poll() not in (None, 0) and time.time() - self.started < 5:
+            self.returncode = self.term.returncode      # the terminal itself failed to start
+        if self.returncode is None and time.time() - self.started > 20 and not os.path.isfile(self.pidf):
+            self.returncode = -1                        # the window never ran the command
+        return self.returncode
+
+    def wait(self, timeout=None):
+        end = None if timeout is None else time.time() + timeout
+        while self.poll() is None:
+            if end is not None and time.time() > end:
+                raise subprocess.TimeoutExpired("steamcmd", timeout)
+            time.sleep(0.5)
+        return self.returncode
+
+    def kill(self):
+        try:
+            pid = int(open(self.pidf).read().strip())
+        except (OSError, ValueError):
+            pid = 0
+        pids = [pid] if pid else []
+        try:                                            # its children (steamcmd and what it started)
+            for p in os.listdir("/proc"):
+                if p.isdigit():
+                    try:
+                        with open(f"/proc/{p}/stat") as f:
+                            if int(f.read().rsplit(")", 1)[1].split()[1]) in pids:
+                                pids.append(int(p))
+                    except (OSError, ValueError, IndexError):
+                        continue
+        except OSError:
+            pass
+        import signal
+        for p in reversed(pids):
+            try:
+                os.kill(p, signal.SIGTERM)
+            except OSError:
+                pass
+        self.returncode = self.returncode if self.returncode is not None else -9
+
+    terminate = kill
+
 class Hit:
     def __init__(self, source, found_as="", version="", updated="", page="", note=""):
         self.source, self.found_as, self.version = source, found_as, version
@@ -222,7 +300,10 @@ class SteamSource(Source):
             results = {}
             hung = threading.Event()
             try:
-                if user:
+                if user and not IS_WIN:
+                    ctx.proc = _TerminalRun(cmd, ctx.work)    # a terminal window, for the password prompt
+                    ctx.log("Steam: a terminal window opened. Enter your password / Steam Guard code there if asked.")
+                elif user:
                     ctx.log("Steam: a console window opened. Enter your password / Steam Guard code there if asked.")
                     ctx.proc = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
                 else:
@@ -234,7 +315,10 @@ class SteamSource(Source):
             threading.Thread(target=self._watchdog, args=(ctx, ctx.proc, staging, idle_limit, hung),
                              daemon=True).start()
             if user:
-                ctx.proc.wait()
+                while ctx.proc.poll() is None and not ctx.stop.is_set() and not hung.is_set():
+                    time.sleep(1)
+                if ctx.stop.is_set() or hung.is_set():
+                    ctx.proc.kill()
             else:
                 for raw in ctx.proc.stdout:
                     line = re.sub(r"\x1b\[[0-9;]*m", "", raw.decode("utf-8", "replace"))

@@ -17,8 +17,14 @@ import customtkinter as ctk
 
 import glyphs
 
-APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "2.0", "Adromedary"
+APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "2.0.1", "Adromedary"
 APP_SHORT = "Paradoxical Launcher"
+IS_WIN = sys.platform.startswith("win")
+# where a game's own folder is, in words for the player
+DATA_HINT = ("Documents\\Paradox Interactive\\<game>" if IS_WIN else
+             "~/.local/share/Paradox Interactive/<game> (or Documents/Paradox Interactive/<game>)")
+DATA_ROOT_HINT = ("Documents\\Paradox Interactive" if IS_WIN else
+                  "~/.local/share/Paradox Interactive or Documents/Paradox Interactive")
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
 
 # ------------------------------------------------------------------ colours: (light theme, dark theme)

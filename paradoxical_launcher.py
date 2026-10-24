@@ -13,7 +13,7 @@ Conflicts: everything that can go wrong in the active playset, explained.
 Crashes:   after a crash: the mods most likely to blame, with the evidence, and a step-by-step culprit hunt.
 
 Run:   python paradoxical_launcher.py
-Build: double-click build.bat  (produces dist\\ParadoxicalLauncher.exe)
+Build: double-click build.bat  (dist\\ParadoxicalLauncher.exe), or on Linux ./build_linux.sh  (dist/ParadoxicalLauncher)
 """
 import hashlib
 import json
@@ -47,6 +47,7 @@ import versions as V
 from browser_helper import BrowserBridge
 from gui_browse import BrowsePage
 from gui_catch import KIND_COLOR, CatchPage
+from gui_common import DATA_HINT, DATA_ROOT_HINT, IS_WIN
 from gui_common import (COLORFUL, PALETTE, TAB_COLORS, Ribbon, ACCENT, ACCENT_HI, ACCENT_SOFT, APP_DIR, APP_NAME, APP_SHORT, APP_VERSION, AUTHOR, BG, BORDER,
                         CARD, CARD_HI, COLUMNS, CRIT, ERR, FAINT, MUTED, MUTED_SOFT, OK, PLAY, PLAY_HI, SHADOW,
                         SURFACE, TEAL, TEAL_SOFT, TEXT, THEMES, WARN, WARN_ICON, WARN_SOFT, WHITE,
@@ -422,7 +423,7 @@ class WelcomeWindow(ctk.CTkToplevel):
         g = self.game.get()
         path = dict(self.games).get(g, "")
         self.where.configure(text=f"Mods go to {path}" if path else
-                             "No Paradox game was found in Documents\\Paradox Interactive. Pick a mod folder "
+                             f"No Paradox game was found in {DATA_ROOT_HINT}. Pick a mod folder "
                              "later with Game > Other mod folder.")
         known = self.app.cfg.get("steam_owned", {}).get(g)
         on_steam = LA.on_steam(g)
@@ -545,7 +546,8 @@ class SettingsWindow(ctk.CTkToplevel):
                      self.check, enabled=has_view)
         self._note(d, 6, "You tick the box yourself; the app never does it for you. Without this, a site showing "
                          "the check is skipped for that run." if has_view else
-                         "Unavailable: the pywebview package is missing. Rebuild with build.bat.", indent=58)
+                         "Unavailable: the pywebview package is missing. Rebuild with " +
+                         ("build.bat." if IS_WIN else "build_linux.sh."), indent=58)
 
         # ---- games
         gs = self._section("Games", "For each game: where it's installed (Play starts it from there, and the "
@@ -672,7 +674,7 @@ class SettingsWindow(ctk.CTkToplevel):
                                             unselected_hover_color=BORDER, text_color=TEXT, fg_color=BORDER)
         self.theme.set(self.cfg.get("theme", "System"))
         self.theme.grid(row=1, column=0, sticky="w", padx=12)
-        self._note(mg, 2, "System follows your Windows light/dark setting. The moon button in the top bar "
+        self._note(mg, 2, "System follows your system's light/dark setting. The moon button in the top bar "
                           "switches too, with either palette.")
         lg = self._group(ap, "Layout")
         button(lg, "Reset panel sizes", self._reset_panes, width=150, icon_name="grid").grid(
@@ -689,7 +691,7 @@ class SettingsWindow(ctk.CTkToplevel):
                      ).grid(row=2, column=0, sticky="w", padx=12, pady=(6, 8))
         brow = ctk.CTkFrame(box, fg_color="transparent")
         brow.grid(row=3, column=0, sticky="w", padx=12, pady=(0, 12))
-        button(brow, "What's new in 2.0", lambda: WhatsNewWindow(app), icon_name="star", width=170).pack(side="left")
+        button(brow, "What's new", lambda: WhatsNewWindow(app), icon_name="star", width=170).pack(side="left")
         button(brow, "Help", app._open_help, icon_name="help", width=90).pack(side="left", padx=8)
         button(brow, "Open the app folder", lambda: open_folder(APP_DIR), icon_name="folder", width=170
                ).pack(side="left")
@@ -908,7 +910,7 @@ class SettingsWindow(ctk.CTkToplevel):
             v = var.get().strip()
             if v and not LA.looks_like_install(game, v):
                 messagebox.showwarning(APP_NAME, f"{v}\ndoesn't look like a {game} install (no launcher settings "
-                                                 "or game .exe found there).", parent=self)
+                                                 "or game program found there).", parent=self)
                 return
             if v:
                 dirs[game] = os.path.normpath(v)
@@ -1133,7 +1135,7 @@ class App(ctk.CTk):
     def __init__(self):
         cfg = load_settings()
         ctk.set_appearance_mode(cfg.get("theme", "System"))     # before the window exists: no flash
-        super().__init__(fg_color=BG)
+        super().__init__(fg_color=BG, className="ParadoxicalLauncher")  # Linux menus
         self.withdraw()                        # shown once everything is ready (the loading screen covers it)
         set_root(self)
         self.cfg = cfg
@@ -2082,7 +2084,7 @@ class App(ctk.CTk):
 
     def _pick_game(self, name):
         if name == OTHER_FOLDER:
-            d = filedialog.askdirectory(title="Choose a mod folder (Documents\\Paradox Interactive\\<game>\\mod)",
+            d = filedialog.askdirectory(title="Choose a mod folder (" + DATA_HINT.split(" (")[0] + ("\\mod)" if IS_WIN else "/mod)"),
                                         initialdir=self.mod_dir() or installer.documents_dir())
             if not d:
                 self._fill_games()
@@ -2299,7 +2301,7 @@ class App(ctk.CTk):
         extra = (["-continuelastsave"] if self.cfg.get("play_continue") else []) + \
                 (["-debug_mode"] if self.cfg.get("play_debug") else [])
         try:
-            proc = LA.start_game(exe, args, extra)
+            proc = LA.start_game(exe, args, extra, appid=LA.game_info(game).get("appid", ""))
         except LA.LauncherError as e:
             messagebox.showwarning(APP_NAME, str(e), parent=self)
             return
@@ -2311,6 +2313,8 @@ class App(ctk.CTk):
                 proc.wait(timeout=20)
             except Exception:
                 return                                # still running after 20 s: it started fine
+            if LA.proton_copy(exe):
+                return                                # Steam started it; its own process ends at once
             if time.time() - t0 < 20 and plat == "steam" and not LA.running("steam.exe"):
                 self.q.put(("play_failed", "The game closed right away. Steam isn't running, and Steam copies "
                                            "of the game need it."))

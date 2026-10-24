@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo === Adromedary's Paradoxical Launcher 2.0: building the .exe ===
+echo === Adromedary's Paradoxical Launcher 2.0.1: building the .exe ===
 python --version >nul 2>&1
 if errorlevel 1 (
   echo Python was not found. Install it from https://www.python.org/downloads/ and tick "Add python.exe to PATH".

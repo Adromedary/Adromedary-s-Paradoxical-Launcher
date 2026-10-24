@@ -13,3 +13,5 @@ not_found.txt
 steamcmd/
 downloads/
 crash_history.json
+.venv/
+.build-venv/

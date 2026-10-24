@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.1 (2026-10-24)
+
+Linux support and a fix.
+
+### Linux
+* Runs on Linux: finds the native games' folders (`~/.local/share/Paradox Interactive`), Documents and
+  Proton prefixes; Steam in its usual, Flatpak and Snap places with all its libraries; starts native
+  copies directly and Proton copies through Steam; reads Windows mod paths from Proton prefixes;
+  extracts .tar archives itself and .rar / .7z with bsdtar, 7z or unrar.
+* `build_linux.sh` builds `dist/ParadoxicalLauncher`, `run_linux.sh` runs it from source, and
+  `install_desktop_entry.sh` adds it to the applications menu.
+
+### Fixes
+* Playsets and Library: the details panel no longer logs "image pyimage… doesn't exist" errors
+  (role badge pictures are made once and kept).
+
 ## 2.0 (2026-10-19)
 
 The biggest update so far: conflicts you can act on, a smarter Auto-sort, playset rules, a new Crashes

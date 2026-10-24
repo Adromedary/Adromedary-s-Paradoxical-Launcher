@@ -30,6 +30,9 @@ TOPICS = [
         ]),
         ("tip", "Mods are installed into Documents\\Paradox Interactive\\<game>\\mod, the same place the "
                 "official launcher uses. The game's own files are never changed."),
+        ("tip", "On Linux the game's folder is ~/.local/share/Paradox Interactive/<game> for the native games, or "
+                "the Documents folder inside the game's Proton prefix for a Windows copy run through Steam Play. "
+                "The app looks in all of them; paths in this help use the Windows spelling."),
         ("tip", "Every list has a detail panel on its right. Drag the gap between them to make either one wider; "
                 "the app remembers it. In Playsets, the gap above \"Not in this playset\" can be dragged too."),
         ("tip", "When the app starts, a short loading screen reads your mods, checks them and draws every list, so "
@@ -39,6 +42,8 @@ TOPICS = [
                 "and right-click almost anything in a list for what you can do with it."),
     ]),
     ("What's new in 2.0", [
+        ("p", "2.0.1 adds Linux (the native games, Steam Play / Proton copies, Flatpak and Snap Steam; build with "
+              "build_linux.sh) and fixes an error in the details panel of Playsets and Library."),
         ("p", "2.0 is the biggest update so far. The short version (Settings > About > What's new shows it with "
               "more detail):"),
         ("bullets", [
@@ -364,6 +369,8 @@ TOPICS = [
         ("p", "Play writes your playset's mods, in order, into the file the game reads at start "
               "(dlc_load.json in the game's Documents folder; your old one is backed up to .work\\backups) "
               "and starts the game the same way the Paradox launcher does. Your DLC settings stay as they are."),
+        ("p", "On Linux, a native copy of the game starts directly. A Windows copy run through Steam Play "
+              "(Proton) is started by Steam (steam -applaunch), with the mod list already written for it."),
         ("bullets", [
             "Before starting, it warns about missing mods and critical conflicts (you can still go ahead).",
             "The game's install folder is found through Steam and GOG. If it isn't, Play asks you once, or "
@@ -471,6 +478,11 @@ WHATS_NEW_INTRO = ("The biggest update so far: conflicts you can act on, a smart
                    "lot of small things that make every tab easier.")
 # (title, icon, lines); titles that name a tab use that tab's colour in the Colorful palette
 WHATS_NEW = [
+    ("New in 2.0.1", "sparkle", [
+        "Linux: the native games, Windows copies run through Steam Play (Proton), Steam from Flatpak or Snap. "
+        "Build it with build_linux.sh, or run it from source with run_linux.sh.",
+        "Fixed an error in the details panel of Playsets and Library.",
+    ]),
     ("Conflicts", "conflicts", [
         "Each conflict says what you'll notice in game, what solves it (load order, a compatch, turning one off) "
         "and how sure the app is.",

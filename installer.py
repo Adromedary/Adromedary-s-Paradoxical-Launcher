@@ -48,21 +48,54 @@ def documents_dir():
                     return path
         except Exception:
             pass
+    if not IS_WIN:
+        try:                                          # the desktop's own Documents folder (may be translated)
+            import subprocess
+            out = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True, text=True, timeout=5).stdout
+            if out.strip() and os.path.isdir(out.strip()) and out.strip() != os.path.expanduser("~"):
+                return out.strip()
+        except Exception:
+            pass
     return os.path.join(os.path.expanduser("~"), "Documents")
 
 
-def detect_mod_dirs():
-    """[(game folder name, mod folder path)] for Paradox games found in Documents."""
-    root = os.path.join(documents_dir(), "Paradox Interactive")
-    found = []
+def paradox_roots():
+    """Folders that hold 'Paradox Interactive/<game>' data folders, best first.
+    Windows: Documents. Linux: the native games' ~/.local/share, then Documents, then the Documents of Proton
+    prefixes (Windows copies of a game run through Steam Play)."""
+    if IS_WIN:
+        return [os.path.join(documents_dir(), "Paradox Interactive")]
+    home = os.path.expanduser("~")
+    data = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
+    roots = [os.path.join(data, "Paradox Interactive"), os.path.join(documents_dir(), "Paradox Interactive")]
+    if sys.platform == "darwin":
+        roots.insert(0, os.path.join(home, "Documents", "Paradox Interactive"))
     try:
-        for name in sorted(os.listdir(root)):
-            game_dir = os.path.join(root, name)
-            if os.path.isdir(game_dir) and (os.path.isdir(os.path.join(game_dir, "mod"))
-                                            or name in PARADOX_GAMES):
-                found.append((name, os.path.join(game_dir, "mod")))
-    except OSError:
+        import launcher
+        for lib in launcher.steam_libraries():
+            for info in launcher.GAMES.values():
+                roots.append(os.path.join(lib, "steamapps", "compatdata", info["appid"], "pfx", "drive_c", "users",
+                                          "steamuser", "Documents", "Paradox Interactive"))
+    except Exception:
         pass
+    return [r for r in dict.fromkeys(os.path.normpath(r) for r in roots) if os.path.isdir(r)]
+
+
+def detect_mod_dirs():
+    """[(game folder name, mod folder path)] for Paradox games found (one per game: the first root that has it)."""
+    found, seen = [], set()
+    for root in paradox_roots():
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for name in names:
+            game_dir = os.path.join(root, name)
+            if name in seen or not os.path.isdir(game_dir):
+                continue
+            if os.path.isdir(os.path.join(game_dir, "mod")) or name in PARADOX_GAMES:
+                found.append((name, os.path.join(game_dir, "mod")))
+                seen.add(name)
     found.sort(key=lambda g: (g[0] != "Crusader Kings III", g[0]))
     return found
 

@@ -40,6 +40,13 @@ def _resolve(mod_dir, value):
     v = value.replace("\\", "/").strip()
     if not v:
         return ""
+    if len(v) > 1 and v[1] == ":" and os.sep == "/":
+        # a Windows path on Linux (a Proton prefix, or a mod folder copied from Windows): the part from the
+        # game's folder on, under this mod folder's game folder
+        m = re.search(r"(?i)/mod/(.+)$", v)
+        if m:
+            return os.path.normpath(os.path.join(os.path.normpath(mod_dir), m.group(1)))
+        return os.path.normpath(v)
     if os.path.isabs(v) or (len(v) > 1 and v[1] == ":"):
         return os.path.normpath(v)
     return os.path.normpath(os.path.join(os.path.dirname(os.path.normpath(mod_dir)), v))

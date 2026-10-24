@@ -1,6 +1,6 @@
 # Adromedary's Paradoxical Launcher
 
-*Version 2.0 · by Adromedary*
+*Version 2.0.1 · by Adromedary*
 
 A mod manager and launcher for Paradox games: **Crusader Kings III**, **Europa Universalis IV / V**,
 **Stellaris**, **Hearts of Iron IV**, **Victoria 3** and **Imperator: Rome**.
@@ -52,8 +52,9 @@ parchment and royal tones, every tab in its own colour, a heraldic ribbon under 
 
 ## Getting started
 
-1. Download `ParadoxicalLauncher.exe` from the Releases page (or build it, see below) and put it in
-   a folder of its own. It keeps its settings and downloads next to itself.
+1. Download `ParadoxicalLauncher.exe` (Windows) or `ParadoxicalLauncher` (Linux) from the Releases page
+   (or build it, see below) and put it in a folder of its own. It keeps its settings and downloads next
+   to itself.
 2. Start it. It asks two things: which game you play, and whether you own it on Steam. (Steam only
    hands out Workshop files to owners; if you don't own the game there, Steam is skipped and the
    other sites are used.)
@@ -135,14 +136,34 @@ install folder is found through Steam and GOG, or set in Settings > Games.
 
 ## Build
 
-Windows, Python 3.10 or newer ("Add python.exe to PATH" ticked). Double-click **`build.bat`**.
+**Windows**: Python 3.10 or newer ("Add python.exe to PATH" ticked). Double-click **`build.bat`**.
 The result is `dist\ParadoxicalLauncher.exe`.
+
+**Linux**: Python 3.10 or newer with Tk and venv (Debian/Ubuntu: `sudo apt install python3 python3-venv
+python3-tk`; Fedora: `sudo dnf install python3 python3-tkinter`; Arch: `sudo pacman -S python tk`).
+Run **`./build_linux.sh`**. The result is `dist/ParadoxicalLauncher`; `./install_desktop_entry.sh
+dist/ParadoxicalLauncher` adds it to your applications menu.
 
 ## Run from source
 
     pip install -r requirements.txt
     pip install pywebview            (optional: the "verify you are human" window)
     python paradoxical_launcher.py
+
+On Linux, `./run_linux.sh` does all of that in a private environment (`.venv`) on first run.
+
+## Linux
+
+* Game folders: `~/.local/share/Paradox Interactive/<game>` for the native games, `~/Documents/Paradox
+  Interactive/<game>`, and the Documents folder inside a game's Proton prefix (a Windows copy run through
+  Steam Play). The app looks in all of them.
+* Steam is found in `~/.steam/steam`, `~/.local/share/Steam`, and the Flatpak and Snap folders, with every
+  library in `libraryfolders.vdf`.
+* Play starts a native copy directly, the way the Paradox launcher does; a Windows copy under Proton is
+  started through Steam (`steam -applaunch`), with the mod list already written for it.
+* `.rar` / `.7z` downloads need `bsdtar` (libarchive-tools), `7z` or `unrar` installed.
+* The "verify you are human" window needs pywebview with GTK WebKit or Qt WebEngine; without it, sites
+  that show that check are skipped.
 
 ## Code map
 
