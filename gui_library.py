@@ -272,7 +272,7 @@ class LibraryPage(ctk.CTkFrame):
             pl = "✓" if m.key in on_set else ("off" if m.key in in_set else "")
             role = self.role(m)
             img = row_picture(t, m.key, self.app.thumb(m), role)
-            rid = t.insert("", "end", image=img, values=(m.name, role.name if self.app.analysis else "...",
+            rid = t.insert("", "end", image=img, values=(m.name, role.name if self.app.role_of(m.key) else "-",
                                                          m.version or "", m.supported or "",
                                                          modscan.human_size(m.size), len(m.files), " ".join(fl), pl),
                            tags=tuple(x for x in (tag, "odd" if i % 2 else "") if x))
@@ -344,9 +344,8 @@ class LibraryPage(ctk.CTkFrame):
         return out
 
     def role(self, m):
-        an = self.app.analysis
-        f = an.facts.get(m.key) if an else None
-        return f.role.role if f and f.role else R.UNKNOWN
+        r = self.app.role_of(m.key)                 # the shown check, else the last check that had it
+        return r.role if r else R.UNKNOWN
 
     def selected(self):
         return [self.by_row[r] for r in self.table.tree.selection() if r in self.by_row]

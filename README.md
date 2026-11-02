@@ -1,6 +1,6 @@
 # Adromedary's Paradoxical Launcher
 
-*Version 2.0.1 · by Adromedary*
+*Version 2.1 · by Adromedary*
 
 A mod manager and launcher for Paradox games: **Crusader Kings III**, **Europa Universalis IV / V**,
 **Stellaris**, **Hearts of Iron IV**, **Victoria 3** and **Imperator: Rome**.
@@ -10,6 +10,20 @@ see which ones clash and why, sort them into a working load order, and start the
 No Paradox launcher needed.
 
 ![Browse, panel view](docs/screenshots/browse-panels.png)
+
+## New in 2.1
+
+* **Much faster checks, only when you want them**: each mod is read once (later checks only read new or
+  updated mods), on all processor cores, and only what a check needs. Checks are per playset, run when you
+  press Check now or Play (it asks), and are saved: a playset checked before loads at once.
+* **Conflicts, rebuilt**: the app learns from the game's own files how mods and the game fit together.
+  It tells a mod that really uses another apart from one that only adds extras when the other is on,
+  recognises packs that already contain another mod, submods, placeholders and one author's shared
+  code, grades each conflict by how much is lost, and finds mods using things that exist nowhere (with
+  the game's renames). Compatch reports show what each mod changed compared with the game and give a
+  patch plan with file names that win.
+* **Linux** (since 2.0.1): the native games, Steam Play / Proton copies, Flatpak and Snap Steam.
+* The game's folder is also found from its own logs, for copies no Steam library or installer knows.
 
 ## New in 2.0
 
@@ -64,9 +78,10 @@ parchment and royal tones, every tab in its own colour, a heraldic ribbon under 
 The **?** button explains every part of the app, starting with a step-by-step "Start here".
 Buttons that only show an icon explain themselves when you rest the pointer on them.
 
-A short loading screen opens the app: it reads your mods, checks them, prepares their pictures and
-draws every list, so the window opens ready to use. The check is kept on disk: while your mods don't
-change, later starts take a couple of seconds.
+A short loading screen opens the app: it lists your mods, loads your playset's saved check (if it has
+one), prepares their pictures and draws every list, so the window opens ready to use. Your playset is
+checked for conflicts when you press Check now or Play (the app asks when the playset changed since its
+last check), or at every start if you choose so in Settings.
 
 ![First start](docs/screenshots/welcome.png)
 
@@ -100,11 +115,17 @@ After each scan every mod is read once in the background and compared with the g
 names it defines and uses, its texts, events and on-actions. From that come:
 
 * **Roles**: what kind of mod it is, from what its files actually do.
-* **Conflicts**, by severity: critical (declared incompatible, two total conversions, a missing
-  dependency, the same mod twice), high (duplicate event IDs, overwritten on-action effects, the same
-  new name used for different things, two mods replacing one window), medium (both change the same
-  objects, defines or interface pieces in differently named files: only a compatch keeps both), low
-  and info. Each says what you'll notice in game, what solves it and how sure it is. Compatches you
+* **Game knowledge**: once per game version the app reads the game's own files and learns which
+  script words refer to which kind of thing (`add_trait` → traits, `trigger_event` → events,
+  `title:` → titles...), how each folder merges (whole files, object by object, first or last file
+  wins), nested definitions and the game's renames. With it, each mod's real uses of other mods are
+  told apart from mere checks (optional extras), and packs, submods, placeholders and shared code are
+  recognised.
+* **Conflicts**, by severity and graded by how much is lost: critical (a page that says the mods don't
+  work together, two total conversions, a missing dependency, the same mod twice), high (big clashes
+  over the same files or windows, duplicate event IDs, overwritten on-action effects), medium (both
+  change the same objects, defines or interface pieces in differently named files: only a compatch
+  keeps both; things that exist nowhere), low and info. Each says what you'll notice in game, what solves it and how sure it is. Compatches you
   have are recognised; others can be searched for on the Workshop, and a **compatch report** (Markdown,
   with both mods' versions side by side and a ready prompt for an AI chat) helps you make one.
 * **Auto-sort**: a weighted ordering of your rules, declared dependencies, compatch / add-on names,
@@ -174,7 +195,7 @@ On Linux, `./run_linux.sh` does all of that in a private environment (`.venv`) o
 | `gui_common.py`, `gui_viewer.py`, `glyphs.py`, `icons.py`, `cards.py`, `appicon.py` | look: the two palettes, shared widgets (tabs, detail panels, dividers, tips, right-click menus), the picture viewer, drawn icons, pictures, Browse cards, app icon |
 | `workshop.py` | reading the Steam Workshop (browse pages, item details) |
 | `engine.py`, `sources.py`, `net.py`, `installer.py`, `browser_helper.py` | downloading and installing |
-| `modscan.py`, `script.py`, `analysis.py`, `roles.py`, `loadorder.py` | reading mods, conflicts, roles, Auto-sort |
+| `modscan.py`, `script.py`, `gamedb.py`, `analysis.py`, `roles.py`, `loadorder.py` | reading mods, the game's rules and learned references, conflicts, roles, Auto-sort |
 | `compat.py`, `report.py` | finding compatches on the Workshop, compatch reports |
 | `crash.py` | crash analysis: reading crash folders and logs, suspects, the culprit hunt, crash reports |
 | `launcher.py`, `profiles.py`, `updates.py`, `versions.py`, `storage.py` | games, playsets, updates, versions, cached-file clean-up |

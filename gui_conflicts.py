@@ -17,7 +17,7 @@ import roles as R
 import workshop as W
 from gui_common import (ACCENT, ACCENT_SOFT, APP_NAME, BORDER, CARD, DETAIL_WIDTH, INFO, INFO_SOFT, MUTED, MUTED_SOFT,
                         OK, OK_SOFT, RIGHT_CLICK, SEV_COLOR, SEV_ICON, SEV_LABEL, SEV_SOFT, TEXT, WARN, WARN_SOFT,
-                        copy_text, DetailPane, font, icon, open_folder, page_frame, popup_menu, px, Split, Tree,
+                        button, copy_text, DetailPane, font, icon, open_folder, page_frame, popup_menu, px, Split, Tree,
                         units)
 
 GROUP_ORDER = ["critical", "high", "medium", "low", "info"]
@@ -25,7 +25,7 @@ GROUP_TITLE = {"critical": "Don't work together / will break", "high": "Somethin
                "medium": "Probably needs a compatch", "low": "Cosmetic or minor", "info": "Fine (for your information)"}
 REMEDY_COLOR = {"order": (OK, OK_SOFT), "compatch": (WARN, WARN_SOFT), "choose": (SEV_COLOR["critical"],
                 SEV_SOFT["critical"]), "enable": (ACCENT, ACCENT_SOFT), "none": (MUTED, MUTED_SOFT),
-                "patched": (OK, OK_SOFT)}
+                "patched": (OK, OK_SOFT), "update": (INFO, INFO_SOFT), "author": (MUTED, MUTED_SOFT)}
 CONF_COLOR = {"certain": (TEXT, MUTED_SOFT), "likely": (INFO, INFO_SOFT), "possible": (MUTED, MUTED_SOFT)}
 COMPATCH_KINDS = A.PATCHABLE
 
@@ -70,10 +70,18 @@ class ConflictsPage(ctk.CTkFrame):
         self.hidden_sw = ctk.CTkSwitch(sw, text="Hidden (0)", variable=self.show_hidden, command=self.render,
                                        text_color=TEXT, font=font(12))
         self.hidden_sw.pack(side="left")
-        self.verdict = ctk.CTkLabel(self, text="", text_color=MUTED, font=font(13, "bold"), anchor="w", justify="left",
+        vrow = ctk.CTkFrame(self, fg_color="transparent")
+        vrow.grid(row=1, column=0, sticky="ew", pady=(12, 10))
+        vrow.grid_columnconfigure(0, weight=1)
+        self.verdict = ctk.CTkLabel(vrow, text="", text_color=MUTED, font=font(13, "bold"), anchor="w", justify="left",
                                     wraplength=900, fg_color=MUTED_SOFT, corner_radius=10, padx=14, height=38,
                                     compound="left")
-        self.verdict.grid(row=1, column=0, sticky="ew", pady=(12, 10))
+        self.verdict.grid(row=0, column=0, sticky="ew")
+        self.check_btn = button(vrow, "Check now", lambda: self.app.run_check(), primary=True, height=38,
+                                icon_name="refresh", width=130,
+                                tip="Check this playset's mods together (mods read before aren't read again)")
+        self.check_btn.grid(row=0, column=1, padx=(8, 0))
+        self.check_btn.grid_remove()
         self._vw = 0
         self.bind("<Configure>", self._wrap_verdict, add="+")    # by the page's width: the text can't change it
         split = Split(self, app, "conflicts")
@@ -154,15 +162,37 @@ class ConflictsPage(ctk.CTkFrame):
             strip.configure(fg_color=SEV_COLOR[sev] if on else BORDER)
         n_on = len(ps.enabled_keys())
         self.scope.configure(text=(f"Playset \"{ps.name}\"  ·  {n_on} mods on" if ps.name else "No playset") +
-                             ("\nAnalysing..." if self.app.analyzing else ""))
+                             ("\nChecking..." if self.app.analyzing else ""))
+        state = self.app.check_state() if ps.name else "none"
+        stale = state == "stale" and not self.app.analyzing
+        if stale:
+            self.check_btn.grid()
+        else:
+            self.check_btn.grid_remove()
         if an is None:
-            self.verdict.configure(text="  Analysing your mods..." if self.app.analyzing else "  Pick your game at the top.",
-                                   text_color=MUTED, fg_color=MUTED_SOFT, image=icon("info", 18, MUTED))
+            if self.app.analyzing:
+                txt = "  Checking your playset..."
+            elif stale:
+                txt = ("  This playset hasn't been checked yet. Check now (or when you press Play) finds mods that "
+                       "don't work together, missing mods and lost changes.")
+            else:
+                txt = "  Pick your game at the top." if not self.app.game() else "  Make a playset to check it."
+            self.verdict.configure(text=txt, text_color=ACCENT if stale else MUTED,
+                                   fg_color=ACCENT_SOFT if stale else MUTED_SOFT,
+                                   image=icon("info", 18, ACCENT if stale else MUTED))
             self.show_detail()
             return
         patched = sum(1 for i in self.counted_issues() if i.patched_by)
         tail = f" {patched} conflict(s) are solved by compatches you have." if patched else ""
-        if counts["critical"]:
+        if stale:
+            new, changed = self.app.check_gap()
+            parts = ([f"{new} mod{'s' if new != 1 else ''} not in it"] if new else []) + \
+                ([f"{changed} updated since"] if changed else [])
+            self.verdict.configure(text="  The playset changed since this check" +
+                                   (f" ({', '.join(parts)})" if parts else "") +
+                                   ". The list shows the last check; Check now brings it up to date.",
+                                   text_color=ACCENT, fg_color=ACCENT_SOFT, image=icon("info", 18, ACCENT))
+        elif counts["critical"]:
             self._verdict(f"{counts['critical']} serious problem(s): some of these mods can't be used together, or "
                           "something they need is missing." + tail, "critical", "alert")
         elif counts["high"]:
@@ -223,7 +253,7 @@ class ConflictsPage(ctk.CTkFrame):
     def _wrap_verdict(self, e):
         if e.widget is not self:
             return
-        w = int(max(300, units(e.width) - 70))
+        w = int(max(300, units(e.width) - 220))
         if abs(w - self._vw) > 8:
             self._vw = w
             self.verdict.configure(wraplength=w)
@@ -314,7 +344,7 @@ class ConflictsPage(ctk.CTkFrame):
     def _mods_text(self, t, i, an):
         have = {m.key: m for m in self.app.mods}
         t.h("Mods involved")
-        turn_off = i.kind not in ("identical", "hook", "integration", "merged", "version")
+        turn_off = i.kind not in ("identical", "hook", "integration", "merged", "version", "optional", "shared_code")
         for k in i.mods:
             f = an.facts.get(k)
             m = have.get(k)

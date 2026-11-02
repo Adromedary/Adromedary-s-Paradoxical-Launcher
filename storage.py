@@ -1,7 +1,7 @@
 """Cached files that only take up room: pictures, Workshop pages, SteamCMD leftovers.
 
 Everything counted here comes back by itself when it's needed again (pictures and pages are downloaded
-again when shown). Never counted: the saved mod check (analysis_cache.pkl), the game's definitions
+again when shown). Never counted: the saved playset checks (checks/) and mod facts (facts/), the game's definitions
 (vanilla_names_*.json), unfinished downloads that can still be resumed (queue.json + staging), backups,
 the error log, settings, playsets and the catch list.
 """

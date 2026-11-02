@@ -35,15 +35,19 @@ TOPICS = [
                 "The app looks in all of them; paths in this help use the Windows spelling."),
         ("tip", "Every list has a detail panel on its right. Drag the gap between them to make either one wider; "
                 "the app remembers it. In Playsets, the gap above \"Not in this playset\" can be dragged too."),
-        ("tip", "When the app starts, a short loading screen reads your mods, checks them and draws every list, so "
-                "everything is ready when the window opens. The check is remembered: as long as your mods don't "
-                "change, the next start takes a few seconds."),
+        ("tip", "When the app starts, a short loading screen lists your mods, loads your playset's saved check (if "
+                "it has one) and draws every list, so everything is ready when the window opens."),
         ("tip", "Rest the pointer on a button without text (arrows, undo, the moon, ?) to see what it does, "
                 "and right-click almost anything in a list for what you can do with it."),
     ]),
-    ("What's new in 2.0", [
-        ("p", "2.0.1 adds Linux (the native games, Steam Play / Proton copies, Flatpak and Snap Steam; build with "
-              "build_linux.sh) and fixes an error in the details panel of Playsets and Library."),
+    ("What's new in 2.1", [
+        ("p", "2.1 rebuilds the conflict check: the app learns from the game's own files how mods and the game "
+              "fit together, so it tells real problems from harmless overlaps, grades them by how much is lost, "
+              "and writes more precise compatch reports. Checks are per playset now, many times faster (each mod "
+              "is read once), saved, and run when you want them (see Conflicts). The game's folder is also "
+              "found from its own logs."),
+        ("p", "2.0.1 added Linux (the native games, Steam Play / Proton copies, Flatpak and Snap Steam; build with "
+              "build_linux.sh) and fixed an error in the details panel of Playsets and Library."),
         ("p", "2.0 is the biggest update so far. The short version (Settings > About > What's new shows it with "
               "more detail):"),
         ("bullets", [
@@ -256,25 +260,56 @@ TOPICS = [
             "Convention: only the role's usual place; it makes no difference in game.",
         ]),
         ("tip", "\"Mods for older game versions load first\" is a tick in the preview (and in Settings > "
-                "Sorting). It's off by default: a mod made for an older version isn't always worse."),
+                "Checks & sorting). It's off by default: a mod made for an older version isn't always worse."),
     ]),
     ("Conflicts", [
         ("p", "Everything that can go wrong between the mods that are on in your active playset, from serious "
               "to harmless. The list says what each conflict is and what solves it; click one for what you'll "
               "notice in game, what to do, why, and the mods involved (with Show in playset and Turn off)."),
+        ("h", "When the playset is checked"),
+        ("p", "A check reads the mods of your active playset and works out every conflict between them. It runs "
+              "when you press Check now (here or in Playsets), before Auto-sort, and when you press Play while "
+              "the playset changed since its last check (you're asked: Check, then play, or Play without "
+              "checking). In Settings > Checks & sorting you can have it check at every start instead. While a "
+              "check runs, a progress screen covers the app; Cancel stops it."),
         ("bullets", [
-            "⊘ Critical: these mods don't work together (their pages say so), two total conversions or map "
-            "mods, the same mod twice, or a mod missing one it needs. Fix these first.",
-            "⚠ High: part of a mod is lost. Duplicate event IDs, on-action effects overwritten, the same new "
-            "name used for different things, two mods replacing the same game window, a mod using things "
-            "from a mod that's turned off, or one mod's copy of a game file leaving out things another uses.",
-            "◆ Medium: both change the same parts of the game, the same game settings (defines) or the same "
-            "interface pieces. The file names decide which version is used, not the load order, so only a "
-            "compatibility patch (\"compatch\") can keep both.",
-            "• Low: different wording of the same texts, older game versions, cosmetic files.",
-            "✓ Info (\"Harmless ones\"): identical files, compatibility hooks, a compatch doing its job, and "
-            "one mod adjusting another on purpose. Nothing to do.",
+            "Each mod is read once: what it defines and uses is kept, and later checks only read mods that are "
+            "new or updated. The first check of a big playset takes a while; the next ones are much faster.",
+            "Every check is saved with its playset (the last 100 by default, Settings > Checks & sorting). Go "
+            "back to a combination you've checked before, say after testing a mod, and its check loads at once.",
+            "The load order isn't part of it: which mod wins each file, Auto-sort and the playset's problems are "
+            "worked out from the check instantly, so sorting never needs a new check.",
+            "When the playset changed since the check you see, Conflicts says so and keeps showing the last "
+            "check until you check again.",
         ]),
+        ("h", "What the severities mean"),
+        ("bullets", [
+            "⊘ Critical: a mod's page says, in so many words, that it doesn't work with the other one; two "
+            "total conversions or map mods; the same mod twice; or a mod missing one it really needs. Fix "
+            "these first.",
+            "⚠ High: a big part of a mod is lost. Both change the same game files or windows a lot, duplicate "
+            "event IDs, on-action effects overwritten, one mod's copy of a game file leaving out things "
+            "another uses.",
+            "◆ Medium: both change the same objects of the game (traits, interactions, schemes...), the same "
+            "game settings (defines) or interface pieces; a pack that already contains another mod you have; "
+            "an unchanged copy of a game object undoing another mod's change; a mod using things that exist "
+            "nowhere (usually made for an older game version). The file names decide which version is used, "
+            "not the load order, so only a compatibility patch (\"compatch\") can keep both.",
+            "• Low: small or cosmetic overlaps, different wording of the same texts, one author's shared code "
+            "in two versions, older game versions.",
+            "✓ Info (\"Harmless ones\"): identical files, compatibility hooks and placeholders, extras a mod "
+            "adds only when another mod is there, a compatch doing its job, and a submod adjusting its base "
+            "mod on purpose. Nothing to do.",
+        ]),
+        ("p", "How it decides: the first time, the app reads the game's own files once and learns which "
+              "script words refer to which kind of thing (add_trait to traits, trigger_event to events...), "
+              "which folders merge object by object and which replace whole files. Then, for each mod, it "
+              "knows what it adds, what it changes of the game, what it really uses from other mods and what "
+              "it only checks for. Using a mod's things means it needs it; only checking for them (has_trait, "
+              "a compatibility file) means optional extras, not a requirement. Packs that already contain "
+              "another mod, submods overriding their base mod and one author's shared code are recognised, so "
+              "they aren't reported as clashes. A mod's page only counts as \"incompatible\" when it names the "
+              "other mod and says so; requests to report problems don't count."),
         ("p", "Each conflict carries three labels: how serious it is, what solves it (Load order decides, "
               "Needs a compatch, Turn one off, Patched...) and how sure the app is (Certain, Likely, Possible)."),
         ("bullets", [
@@ -283,13 +318,16 @@ TOPICS = [
             "the compatch is installed but off, the conflict offers to turn it on.",
             "Look for a compatch searches the Workshop for a patch made for the two mods and says how sure it "
             "is (it needs both mods: certain) and whether it may be outdated.",
-            "Save compatch report writes a Markdown file with everything needed to make one: the two mods, "
-            "the game's rules for combining them, each problem, and the objects they fight over side by side "
-            "(with the game's own version). It ends with a prompt: paste it into an AI chat (Claude, ChatGPT...) "
-            "together with the report, or send the report to a modder.",
+            "Save compatch report writes a Markdown file with everything needed to make one: the two mods and "
+            "how they relate, the game's rules for combining that kind of file (with the game's own notes), "
+            "each problem, and every object they fight over: the game's version, each mod's, and what each mod "
+            "changed (as a diff), all complete so a patch can be written from the report alone (only a report "
+            "that would be too long for an AI chat shortens its biggest pieces, saying where the rest is). It then gives a step-by-step patch plan with the exact file names that will "
+            "win, and ends with a strict prompt: paste it into an AI chat (Claude, ChatGPT...) together with "
+            "the report, or send the report to a modder.",
             "Hide this conflict takes a conflict you've accepted out of the list and the counts. The Hidden "
-            "switch shows hidden ones again (greyed), where you can unhide them; Settings > Sorting shows them "
-            "all again at once.",
+            "switch shows hidden ones again (greyed), where you can unhide them; Settings > Checks & sorting "
+            "shows them all again at once.",
             "Right-click a conflict for the same actions.",
         ]),
         ("tip", "Typical fixes: a compatch (yours, from the Workshop, or one you have made from the report); or "
@@ -464,8 +502,9 @@ TOPICS = [
             "crash_history.json: every crash and every game that worked, with their mods (the Crashes tab uses it).",
             "steamcmd\\: Valve's downloader.",
             ".work\\: downloads in progress and the resume queue, backups of the game's mod list, cached "
-            "Workshop pages and pictures, the game's own definitions (read once per game version), the last "
-            "analysis of your mods (analysis_cache.pkl, used again while nothing changes) and errors.log.",
+            "Workshop pages and pictures, the game's own definitions (read once per game version), facts\\ (what "
+            "each mod defines and uses, read once per mod version), checks\\ (the saved checks of your last "
+            "playsets), file_hashes.json (fingerprints of files several mods share) and errors.log.",
             "Cached pictures, screenshots and Workshop pages only take room: when they pass your limit "
             "(Settings > Storage, 250 MB unless you change it) the app offers to clear them at start. They come "
             "back by themselves when needed.",
@@ -474,10 +513,40 @@ TOPICS = [
     ]),
 ]
 
-WHATS_NEW_INTRO = ("The biggest update so far: conflicts you can act on, a smarter Auto-sort, playset rules, and a "
-                   "lot of small things that make every tab easier.")
+WHATS_NEW_INTRO = ("2.1 rebuilds the conflict check from the ground up and makes it many times faster: it checks "
+                   "your playset when you want it to, and remembers. On top of 2.0's conflicts you can act on, "
+                   "smarter Auto-sort and playset rules (below).")
 # (title, icon, lines); titles that name a tab use that tab's colour in the Colorful palette
 WHATS_NEW = [
+    ("New in 2.1: much faster, and only when you want it", "sparkle", [
+        "Each mod is read once: what it defines and uses is kept, so a check only reads mods that are new or "
+        "updated. Big mods are read on all your processor's cores at once, and only what a check needs is read "
+        "(texts in one language, no pictures or models).",
+        "Listing your mods is faster too (one look per folder instead of one per file), and files several mods "
+        "share are only compared when they could be the same.",
+        "Your playset is checked when you want: Check now, before Auto-sort, or when you press Play after the "
+        "playset changed (it asks). Settings can make it check at every start instead.",
+        "Every check is saved with its playset (the last 100). Turning a test mod off again, or switching back to "
+        "a playset, loads its check at once. Re-sorting never needs a new check.",
+        "A check covers the app with a progress screen (with Cancel); the loading screen at start has a real "
+        "progress bar and sits in the middle of the screen it opens on, ultrawide included.",
+    ]),
+    ("New in 2.1: Conflicts, rebuilt", "conflicts", [
+        "The app reads the game's own files once per game version and learns how its script refers to things "
+        "(add_trait to traits, trigger_event to events...), how each folder merges, and what the game renamed.",
+        "Fewer false alarms: a mod that only checks for another one has optional extras, it doesn't require it; "
+        "\"incompatible\" needs the mod's page to name the other mod and say so; packs that already contain "
+        "another mod, submods adjusting their base mod, placeholders, one author's shared code and blocks the "
+        "game merges (genes, coats of arms) are recognised.",
+        "Graded by how much is lost: the kind of thing, how big each piece is and how many; cosmetic overlaps "
+        "stay minor.",
+        "New checks: a mod using things that exist nowhere (with the game's renames, such as scholar to "
+        "erudite), an unchanged copy of a game object undoing another mod's change, a pack plus the mod it "
+        "contains, effect blocks put into the game's own on-actions.",
+        "Compatch reports show what each mod changed compared with the game, the game's notes on that kind of "
+        "file, and a step-by-step patch plan with file names that win; the AI prompt is stricter.",
+        "The game's folder is also found from its own logs, for copies no Steam library or installer knows.",
+    ]),
     ("New in 2.0.1", "sparkle", [
         "Linux: the native games, Windows copies run through Steam Play (Proton), Steam from Flatpak or Snap. "
         "Build it with build_linux.sh, or run it from source with run_linux.sh.",

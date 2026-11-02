@@ -225,7 +225,9 @@ class CrashPage(ctk.CTkFrame):
     def analyse(self, crash, force=False):
         an = self.app.analysis
         if an is None or self.app.analyzing:
-            self._summary_wait(crash, "Waiting for the mod check to finish...")
+            self._summary_wait(crash, "Waiting for the playset check to finish..." if self.app.analyzing else
+                               "This uses the check of your playset, and it hasn't been checked yet. Press Check "
+                               "now in the Conflicts tab (or Play, which offers it); the crash is read right after.")
             self.after(1500, lambda: self.current is crash and self.analyse(crash, force))
             return
         if crash.folder in self.busy:

@@ -15,7 +15,6 @@ Crashes:   after a crash: the mods most likely to blame, with the evidence, and 
 Run:   python paradoxical_launcher.py
 Build: double-click build.bat  (dist\\ParadoxicalLauncher.exe), or on Linux ./build_linux.sh  (dist/ParadoxicalLauncher)
 """
-import hashlib
 import json
 import multiprocessing
 import subprocess
@@ -34,6 +33,7 @@ import customtkinter as ctk
 
 import analysis as A
 import appicon
+import checks as C
 import engine as E
 import help_text as HT
 import icons
@@ -51,8 +51,8 @@ from gui_common import DATA_HINT, DATA_ROOT_HINT, IS_WIN
 from gui_common import (COLORFUL, PALETTE, TAB_COLORS, Ribbon, ACCENT, ACCENT_HI, ACCENT_SOFT, APP_DIR, APP_NAME, APP_SHORT, APP_VERSION, AUTHOR, BG, BORDER,
                         CARD, CARD_HI, COLUMNS, CRIT, ERR, FAINT, MUTED, MUTED_SOFT, OK, PLAY, PLAY_HI, SHADOW,
                         SURFACE, TEAL, TEAL_SOFT, TEXT, THEMES, WARN, WARN_ICON, WARN_SOFT, WHITE,
-                        Banner, button, card, ctk_image, error_log, fit_geometry, font, icon, open_folder, pick, px,
-                        set_root, Split, style_trees, TabBar, Tooltip, units)
+                        Banner, button, card, center_on_screen, ctk_image, error_log, fit_geometry, font, icon,
+                        open_folder, pick, px, set_root, Split, style_trees, TabBar, Tooltip, units)
 from gui_conflicts import ConflictsPage
 from gui_crash import CrashPage
 from gui_library import LibraryPage
@@ -65,10 +65,13 @@ UPDATES_FILE = os.path.join(APP_DIR, "updates.json")
 PROFILES_FILE = os.path.join(APP_DIR, "profiles.json")
 CATCH_FILE = os.path.join(APP_DIR, "catch_list.json")     # Browse's catch list, kept until each mod is installed
 WORK_DIR = os.path.join(APP_DIR, ".work")
+HASHES_FILE = os.path.join(WORK_DIR, "file_hashes.json")    # fingerprints of files shared by several mods
+ROLES_FILE = os.path.join(WORK_DIR, "roles.pkl")           # each mod's role from the last check that had it
 TABS = ["Browse", "Catch", "Library", "Playsets", "Conflicts", "Crashes"]
 TAB_ICONS = {"Browse": "browse", "Catch": "download", "Library": "library", "Playsets": "playsets",
              "Conflicts": "conflicts", "Crashes": "crash"}
 OTHER_FOLDER = "Other mod folder..."
+CHECK_KEEP_CHOICES = (10, 25, 50, 100, 200, 500)
 
 DEFAULTS = {
     "mod_dir": "",
@@ -107,6 +110,8 @@ DEFAULTS = {
     "columns": {},                # list column widths you dragged
     "ask_deps": True,             # ask whether to catch the mods a mod needs
     "cleanup_limit_mb": 250,      # offer to clear cached pictures and pages above this size
+    "check_at_start": False,      # check the active playset at every start (else: only before playing, asked)
+    "check_history": 100,         # saved checks of this many playsets
     "role_overrides": {},         # {mod folder: {.mod file: role id}} roles you set yourself
     "lib_playset": "All mods",    # which playset the Library shows
     "hidden_issues": {},          # {mod folder: [conflict signatures]} conflicts you've hidden
@@ -183,11 +188,12 @@ def steam_allowed(cfg, game):
 # ================================================================== loading screen
 class Splash(ctk.CTkToplevel):
     """Shown once while the app starts: builds every tab, reads the mods, loads (or works out) the
-    analysis, decodes the pictures and draws the lists, so the window opens ready to use."""
+    playset's check, decodes the pictures and draws the lists, so the window opens ready to use."""
 
-    W, H, R = 480, 320, 22                    # design size and corner radius
+    W, H, R = 520, 360, 22                    # design size and corner radius
     PAPER = ("#fbf8f1", "#1f1c25")            # a warm sheet of paper (light) / dark vellum
     EDGE = ("#d9ccb2", "#3b3446")
+    TRACK = ("#ece3d2", "#2d2836")
 
     def __init__(self, app):
         dark = ctk.get_appearance_mode() == "Dark"
@@ -220,35 +226,208 @@ class Splash(ctk.CTkToplevel):
         ctk.CTkLabel(inner, text=APP_NAME, text_color=TEXT, font=font(18, "bold")).pack()
         ctk.CTkLabel(inner, text=f"version {APP_VERSION}  ·  by {AUTHOR}", text_color=MUTED,
                      font=font(11)).pack(pady=(2, 0))
-        ctk.CTkFrame(inner, fg_color=self.EDGE, height=1, width=300).pack(pady=(14, 0))   # a ruled line
-        self.bar = ctk.CTkProgressBar(inner, width=330, height=6, corner_radius=3, fg_color=self.EDGE,
-                                      progress_color=ACCENT)
+        ctk.CTkFrame(inner, fg_color=self.EDGE, height=1, width=320).pack(pady=(14, 0))   # a ruled line
+        # the loading bar: a real progress track, how far it is and what it's doing
+        self.bar = ctk.CTkProgressBar(inner, width=400, height=14, corner_radius=7, fg_color=self.TRACK,
+                                      progress_color=ACCENT, border_width=1, border_color=self.EDGE)
         self.bar.set(0)
-        self.bar.pack(pady=(14, 6))
-        self.lbl = ctk.CTkLabel(inner, text="Starting...", text_color=MUTED, font=font(11))
-        self.lbl.pack()
+        self.bar.pack(pady=(16, 6))
+        row = ctk.CTkFrame(inner, fg_color="transparent", width=400, height=20)
+        row.pack(fill="x")
+        row.pack_propagate(False)
+        self.lbl = ctk.CTkLabel(row, text="Starting...", text_color=MUTED, font=font(11), anchor="w")
+        self.lbl.pack(side="left")
+        self.pct = ctk.CTkLabel(row, text="0%", text_color=TEXT, font=font(11, "bold"), anchor="e")
+        self.pct.pack(side="right")
+        self.target = self.shown = 0.0
+        self._size = None
         self.center()
         self.update()
+        self.center()                         # again from the size it really got
+        self.after(250, self.center)
+        self._tick()
 
     def center(self):
-        """In the middle of the screen, measured from the size it really gets (the display scale applied:
-        before it's drawn, Windows reports no size yet)."""
+        """In the exact middle of the monitor the mouse is on, measured from the size the sheet really got
+        on screen (display scaling applied), so it sits centred on any resolution, ultrawide included."""
         try:
             k = ctk.ScalingTracker.get_window_scaling(self)
         except Exception:
             k = 1.0
-        w, h = round(self.W * k), round(self.H * k)
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        x, y = max(0, (sw - w) // 2), max(0, (sh - h) // 2)
-        tk.Toplevel.geometry(self, f"{w}x{h}+{x}+{y}")     # real pixels: no second scaling
+        if self._size is None:
+            got = center_on_screen(self, round(self.W * k), round(self.H * k))
+        else:
+            got = center_on_screen(self)
+        self._size = got or self._size or (1, 1)
+
+    def _tick(self):
+        """Move the bar smoothly towards where the work is; during a long step it keeps creeping a little,
+        so it never looks frozen."""
+        try:
+            if not self.winfo_exists():
+                return
+            if self.shown < self.target:
+                self.shown += max(0.004, (self.target - self.shown) * 0.25)
+                self.shown = min(self.shown, self.target)
+            elif self.shown < min(0.985, self.target + 0.05):
+                self.shown += 0.0006
+            self.bar.set(self.shown)
+            self.pct.configure(text=f"{int(round(self.shown * 100))}%")
+            size = (self.winfo_width(), self.winfo_height())
+            if self._size and size != tuple(self._size) and size[0] > 1:
+                self.center()
+            self.after(30, self._tick)
+        except tk.TclError:
+            pass
+
+    def note(self, text, fraction):
+        """Like step, without drawing right away (for progress that arrives while the app is busy)."""
+        try:
+            self.lbl.configure(text=text if len(text) <= 64 else text[:61] + "...")
+            self.target = max(self.target, max(0.0, min(1.0, fraction)))
+        except tk.TclError:
+            pass
 
     def step(self, text, fraction):
         try:
-            self.lbl.configure(text=text)
-            self.bar.set(max(0.0, min(1.0, fraction)))
+            self.lbl.configure(text=text if len(text) <= 64 else text[:61] + "...")
+            self.target = max(self.target, max(0.0, min(1.0, fraction)))
+            if fraction >= 1.0:
+                self.shown = 1.0
+                self.bar.set(1.0)
+                self.pct.configure(text="100%")
             self.update()
         except tk.TclError:
             pass
+
+
+# ================================================================== a check of the playset, on top of the app
+class CheckOverlay(ctk.CTkFrame):
+    """Covers the whole window while a playset is being checked: what's happening, a progress bar and
+    Cancel. The app can't be used meanwhile (the check changes what every tab shows)."""
+
+    def __init__(self, app, title, sub, on_cancel=None):
+        super().__init__(app, fg_color=BG, corner_radius=0)
+        self.app = app
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.lift()
+        box = ctk.CTkFrame(self, fg_color=CARD, corner_radius=16, border_width=1, border_color=BORDER)
+        box.place(relx=0.5, rely=0.45, anchor="center")
+        body = ctk.CTkFrame(box, fg_color="transparent")
+        body.pack(padx=34, pady=(26, 22))
+        try:
+            self._logo = ctk_image(appicon.render(128), (64, 64))
+            ctk.CTkLabel(body, text="", image=self._logo).pack(pady=(0, 8))
+        except Exception:
+            pass
+        ctk.CTkLabel(body, text=title, text_color=TEXT, font=font(17, "bold")).pack()
+        self.sub = ctk.CTkLabel(body, text=sub, text_color=MUTED, font=font(12), wraplength=440, justify="center")
+        self.sub.pack(pady=(4, 0))
+        self.bar = ctk.CTkProgressBar(body, width=440, height=14, corner_radius=7, progress_color=ACCENT,
+                                      fg_color=MUTED_SOFT)
+        self.bar.set(0)
+        self.bar.pack(pady=(18, 6))
+        row = ctk.CTkFrame(body, fg_color="transparent", width=440, height=20)
+        row.pack(fill="x")
+        row.pack_propagate(False)
+        self.lbl = ctk.CTkLabel(row, text="Starting...", text_color=MUTED, font=font(11), anchor="w")
+        self.lbl.pack(side="left")
+        self.pct = ctk.CTkLabel(row, text="0%", text_color=TEXT, font=font(11, "bold"), anchor="e")
+        self.pct.pack(side="right")
+        self.time = ctk.CTkLabel(body, text="", text_color=MUTED, font=font(10))
+        self.time.pack(pady=(6, 0))
+        self.cancel_b = None
+        if on_cancel:
+            self.cancel_b = button(body, "Cancel", on_cancel, width=110, icon_name="close")
+            self.cancel_b.pack(pady=(14, 0))
+        self.t0 = time.time()
+        self.target = self.shown = 0.0
+        try:
+            self.grab_set()                    # clicks and keys go nowhere else meanwhile
+        except tk.TclError:
+            pass
+        self._tick()
+
+    def _tick(self):
+        try:
+            if not self.winfo_exists():
+                return
+            if self.shown < self.target:
+                self.shown = min(self.target, self.shown + max(0.004, (self.target - self.shown) * 0.25))
+            elif self.shown < min(0.985, self.target + 0.04):
+                self.shown += 0.0004
+            self.bar.set(self.shown)
+            self.pct.configure(text=f"{int(round(self.shown * 100))}%")
+            el = int(time.time() - self.t0)
+            self.time.configure(text=f"{el // 60}:{el % 60:02d}")
+            self.after(40, self._tick)
+        except tk.TclError:
+            pass
+
+    def step(self, text, fraction):
+        try:
+            self.lbl.configure(text=text if len(text) <= 70 else text[:67] + "...")
+            self.target = max(self.target, max(0.0, min(1.0, fraction)))
+        except tk.TclError:
+            pass
+
+    def close(self):
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
+
+
+class AskCheckDialog(ctk.CTkToplevel):
+    """Before playing a playset that changed since its last check: check it first, or play now."""
+
+    def __init__(self, app, text, on_choice):
+        super().__init__(app, fg_color=BG)
+        self.app, self.on_choice, self.done = app, on_choice, False
+        self.title(f"Check this playset? - {APP_NAME}")
+        self.resizable(False, False)
+        self.transient(app)
+        appicon.apply(self, APP_DIR)
+        self.protocol("WM_DELETE_WINDOW", lambda: self._choose(None))
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=24, pady=(20, 8))
+        top = ctk.CTkFrame(body, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkLabel(top, text="", image=icon("conflicts", 30, ACCENT)).pack(side="left", padx=(0, 12), anchor="n")
+        tx = ctk.CTkFrame(top, fg_color="transparent")
+        tx.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(tx, text="Check this playset before playing?", text_color=TEXT, font=font(16, "bold"),
+                     anchor="w").pack(fill="x")
+        ctk.CTkLabel(tx, text=text, text_color=MUTED, font=font(12), anchor="w", justify="left",
+                     wraplength=440).pack(fill="x", pady=(4, 0))
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.pack(fill="x", padx=24, pady=(10, 20))
+        button(foot, "Check, then play", lambda: self._choose("check"), primary=True, width=150,
+               icon_name="check").pack(side="right")
+        button(foot, "Play without checking", lambda: self._choose("play"), width=170,
+               icon_name="right").pack(side="right", padx=8)
+        button(foot, "Cancel", lambda: self._choose(None), width=90).pack(side="left")
+        center_on_screen(self)
+        self.after(120, self._grab)
+
+    def _grab(self):
+        try:
+            self.grab_set()
+            self.focus()
+        except Exception:
+            pass
+
+    def _choose(self, choice):
+        if self.done:
+            return
+        self.done = True
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+        self.on_choice(choice)
 
 
 # ================================================================== required mods
@@ -326,14 +505,14 @@ class DepsDialog(ctk.CTkToplevel):
 
 # ================================================================== first run
 class WelcomeWindow(ctk.CTkToplevel):
-    """Two questions before the app starts: which game, and is it owned on Steam."""
+    """Three questions before the app starts: which game, is it owned on Steam, and when to check mods."""
 
     def __init__(self, app, on_done):
         super().__init__(app, fg_color=BG)
         self.app, self.on_done = app, on_done
         self.title(f"Welcome - {APP_NAME}")
-        fit_geometry(self, 640, 600, app)
-        self.minsize(560, 520)
+        fit_geometry(self, 660, 720, app)
+        self.minsize(560, 560)
         if app.winfo_viewable():
             self.transient(app)
         self.resizable(True, True)
@@ -354,7 +533,7 @@ class WelcomeWindow(ctk.CTkToplevel):
         tt.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(tt, text=f"Welcome to {APP_NAME}", text_color=TEXT, font=font(19, "bold"), anchor="w",
                      justify="left", wraplength=480).pack(fill="x")
-        ctk.CTkLabel(tt, text="Find, download, sort and play mods for Paradox games. Two quick questions and "
+        ctk.CTkLabel(tt, text="Find, download, sort and play mods for Paradox games. Three quick questions and "
                               "you're set; both can be changed later in Settings.", text_color=MUTED, font=font(12),
                      anchor="w", justify="left", wraplength=480).pack(fill="x", pady=(2, 0))
 
@@ -400,10 +579,26 @@ class WelcomeWindow(ctk.CTkToplevel):
                                      "anonymously and the other sites take over.",
                      text_color=MUTED, font=font(10), anchor="w", justify="left", wraplength=500
                      ).grid(row=2, column=0, sticky="ew")
+
+        # 3. when to check the playset
+        self._step(body, 8, 3, "When should your playset be checked for conflicts?")
+        self.when = ctk.StringVar(value="start" if app.cfg.get("check_at_start") else "play")
+        wo = ctk.CTkFrame(body, fg_color="transparent")
+        wo.grid(row=9, column=1, sticky="ew")
+        ctk.CTkRadioButton(wo, text="Only when I play, and only if the playset changed (it asks first)",
+                           variable=self.when, value="play", text_color=TEXT, font=font(12),
+                           fg_color=ACCENT).pack(anchor="w", pady=3)
+        ctk.CTkRadioButton(wo, text="Every time the app starts", variable=self.when, value="start", text_color=TEXT,
+                           font=font(12), fg_color=ACCENT).pack(anchor="w", pady=3)
+        ctk.CTkLabel(body, text="Each mod is read once; later checks only read new or updated mods, and a playset "
+                                "checked before loads at once. Check now in the Conflicts tab works any time.",
+                     text_color=MUTED, font=font(11), anchor="w", justify="left", wraplength=500
+                     ).grid(row=10, column=1, sticky="ew", pady=(4, 0))
         foot = ctk.CTkFrame(self, fg_color="transparent")
         foot.pack(fill="x", padx=26, pady=(0, 20))
         button(foot, "Start", self._finish, primary=True, width=140, height=38, icon_name="right").pack(side="right")
         self._game_changed()
+        center_on_screen(self)                 # in the middle of the screen it opens on
         self.after(150, self._grab)
 
     def _step(self, parent, row, n, text):
@@ -453,6 +648,7 @@ class WelcomeWindow(ctk.CTkToplevel):
             cfg.setdefault("steam_owned", {})[g] = self.owned.get() == "yes"
         if self.owned.get() == "yes":
             cfg["steam_user"] = self.user.get().strip()
+        cfg["check_at_start"] = self.when.get() == "start"
         cfg["welcome_done"] = True
         self.app.save()
         try:
@@ -477,7 +673,7 @@ PALETTE_PREVIEW = [
 
 class _Nav:
     """The Settings sidebar: get() / set(name) like a tab view (older names still work)."""
-    ALIASES = {"Downloads": "General", "Auto-sort": "Sorting"}
+    ALIASES = {"Downloads": "General", "Auto-sort": "Checks & sorting", "Sorting": "Checks & sorting"}
 
     def __init__(self, win):
         self.win = win
@@ -490,7 +686,7 @@ class _Nav:
 
 
 class SettingsWindow(ctk.CTkToplevel):
-    SECTIONS = [("General", "settings"), ("Games", "play"), ("Sorting", "sparkle"), ("Download sites", "download"),
+    SECTIONS = [("General", "settings"), ("Games", "play"), ("Checks & sorting", "sparkle"), ("Download sites", "download"),
                 ("Accounts", "key"), ("Storage", "broom"), ("Appearance", "palette"), ("About", "crest")]
 
     def __init__(self, app, tab=None):
@@ -570,7 +766,31 @@ class SettingsWindow(ctk.CTkToplevel):
                                                                          pady=(2, 10))
 
         # ---- sorting and conflicts
-        so = self._section("Sorting", "How Auto-sort decides, and the conflicts you've hidden.")
+        so = self._section("Checks & sorting", "When your playset is checked for conflicts, how Auto-sort "
+                                               "decides, and the conflicts you've hidden.")
+        ck = self._group(so, "Checking your playset")
+        self.check_start = ctk.BooleanVar(value=self.cfg.get("check_at_start", False))
+        self._switch(ck, 1, "Check the playset every time the app starts", self.check_start)
+        self._note(ck, 2, "Off: the app asks before you play, and only when the playset changed since its last check "
+                          "(Check now in Conflicts works any time). Each mod is read once; later checks read only new "
+                          "or updated mods.", indent=58)
+        hrow = ctk.CTkFrame(ck, fg_color="transparent")
+        hrow.grid(row=3, column=0, sticky="w", padx=12, pady=(6, 2))
+        ctk.CTkLabel(hrow, text="Remember the checks of the last", text_color=TEXT, font=font(12)).pack(side="left")
+        self.keep_checks = ctk.CTkOptionMenu(hrow, values=[str(n) for n in CHECK_KEEP_CHOICES], width=80, height=28,
+                                             fg_color=CARD, button_color=CARD, button_hover_color=BORDER,
+                                             text_color=TEXT, font=font(12, "bold"), dynamic_resizing=False)
+        self.keep_checks.set(str(self.cfg.get("check_history", C.DEFAULT_KEEP)))
+        self.keep_checks.pack(side="left", padx=6)
+        ctk.CTkLabel(hrow, text="playsets", text_color=TEXT, font=font(12)).pack(side="left")
+        h = app.history
+        self.hist_lbl = ctk.CTkLabel(ck, text=f"{len(h.index)} saved now ({ST.human(h.size())}). Going back to a "
+                                              "combination checked before, after testing a mod for example, loads it "
+                                              "at once.", text_color=MUTED, font=font(11), anchor="w", justify="left",
+                                     wraplength=560)
+        self.hist_lbl.grid(row=4, column=0, sticky="w", padx=12)
+        button(ck, "Forget saved checks", self._forget_checks, icon_name="trash", width=170).grid(
+            row=5, column=0, sticky="w", padx=12, pady=(6, 12))
         a = self._group(so, "Auto-sort")
         self.hints = ctk.BooleanVar(value=self.cfg.get("workshop_hints", True))
         self._switch(a, 1, "Read the mods' Workshop pages for notes like \"load after X\"", self.hints)
@@ -614,7 +834,7 @@ class SettingsWindow(ctk.CTkToplevel):
         # ---- storage
         st = self._section("Storage", "The app keeps pictures, screenshots and Workshop pages so they show up fast. "
                                       "They come back by themselves when needed, so clearing them loses nothing. "
-                                      "Your mods, playsets, unfinished downloads, backups and the saved mod check "
+                                      "Your mods, playsets, unfinished downloads, backups and the saved playset checks "
                                       "are never touched.")
         lim = self._group(st, "Offer to clear them above")
         cur_mb = int(self.cfg.get("cleanup_limit_mb", ST.DEFAULT_LIMIT_MB))
@@ -734,6 +954,7 @@ class SettingsWindow(ctk.CTkToplevel):
                      wraplength=560).grid(row=row, column=0, sticky="w", padx=(indent, 12), pady=(0, 10))
 
     def show_section(self, name):
+        name = _Nav.ALIASES.get(name, name)
         if name not in self.pages:
             return
         self.current = name
@@ -749,6 +970,15 @@ class SettingsWindow(ctk.CTkToplevel):
             c.configure(border_color=ACCENT if n == name else BORDER)
         self.pal_note.configure(text="" if name == PALETTE else "Takes effect when the app restarts (it offers to "
                                                                  "restart when you save).")
+
+    def _forget_checks(self):
+        if not messagebox.askyesno(APP_NAME, "Forget every saved playset check? The next check of each playset "
+                                             "runs again (mods read before still aren't read again).", parent=self):
+            return
+        self.app.history.clear()
+        self.app.check_sig = None
+        self.app.refresh_check()
+        self.hist_lbl.configure(text="0 saved now.")
 
     def _unhide_all(self):
         self.app.cfg["hidden_issues"] = {}
@@ -928,7 +1158,8 @@ class SettingsWindow(ctk.CTkToplevel):
                         other_dir=self.other_dir.get().strip() or DEFAULTS["other_dir"],
                         add_new_to_playset=bool(self.add_new.get()), workshop_hints=bool(self.hints.get()),
                         older_first=bool(self.older.get()), game_dirs=dirs, steam_owned=owned, ask_deps=bool(self.ask_deps.get()),
-                        cleanup_limit_mb=ST.LIMITS_MB[int(round(self.limit.get()))])
+                        cleanup_limit_mb=ST.LIMITS_MB[int(round(self.limit.get()))],
+                        check_at_start=bool(self.check_start.get()), check_history=int(self.keep_checks.get()))
         self.app.apply_settings(self.cfg)
         self.destroy()
         if self.palette != PALETTE:
@@ -1166,6 +1397,24 @@ class App(ctk.CTk):
         self.to_add = []                # freshly installed mods waiting for the next scan to join the playset
         self.analysis, self.analyzing, self.an_sig, self.an_token = None, False, None, 0
         self.an_progress = ""
+        # playset checks: each mod's facts are kept once (FactStore), each checked playset's result too
+        self.facts_store = A.FactStore(os.path.join(WORK_DIR, "facts"))
+        self.history = C.CheckHistory(os.path.join(WORK_DIR, "checks"), cfg.get("check_history", C.DEFAULT_KEEP))
+        self.check_sig, self.checking, self.check_stop, self.overlay = None, False, None, None
+        self._check_after = None
+        self._pc_memo = None
+        self._boot_check = False
+        self.known_roles = {}
+        try:
+            with open(ROLES_FILE, "rb") as fh:
+                self.known_roles = pickle.load(fh)
+        except Exception:
+            self.known_roles = {}
+        modscan.load_hashes(HASHES_FILE)
+        try:                                   # the old all-mods check (2.1 and before): replaced by the above
+            os.remove(os.path.join(WORK_DIR, "analysis_cache.pkl"))
+        except OSError:
+            pass
         self._thumbs, self._wids, self._reg_cache = {}, None, None
         self.catch_list = load_catch_list()     # workshop id -> title, waiting to be caught (kept on disk)
         self.dep_check = set()          # workshop ids whose required mods are being looked up
@@ -1773,9 +2022,12 @@ class App(ctk.CTk):
         self.browse.search_for(text)
 
     def conflicts_changed(self):
-        """The active playset (or the analysis) changed: refresh the Conflicts tab and the counters."""
+        """The active playset (or the analysis) changed: refresh the Conflicts tab and the counters, and
+        look for a saved check of the playset as it is now."""
         self.conflicts.render()
         self._tab_info()
+        if self.mods_loaded and not self.checking:
+            self.refresh_check()
 
     def _tab_info(self):
         mods = self.mods
@@ -1792,8 +2044,15 @@ class App(ctk.CTk):
         bad = c is not None and (c["critical"] or c["high"])
         self.status_dot.configure(fg_color=(CRIT if c and c["critical"] else WARN) if bad else
                                   (ACCENT if self.analyzing else OK))
-        self.status_right.configure(text=(f"Analysing your mods: {self.an_progress}..." if self.analyzing and
-                                          self.an_progress else ("Analysing your mods..." if self.analyzing else "")))
+        if self.checking:
+            right = f"Checking the playset: {self.an_progress}" if self.an_progress else "Checking the playset..."
+        elif self.analyzing:
+            right = "Loading the playset's saved check..."
+        elif ps.name and self.mods_loaded and self.check_state() == "stale":
+            right = "Playset not checked since it changed"
+        else:
+            right = ""
+        self.status_right.configure(text=right)
         # tab counters
         n_up = sum(1 for m in mods if self.updates.get(m.key, {}).get("update"))
         self.tabs.set_badge("Library", n_up or "", ACCENT)
@@ -1819,27 +2078,251 @@ class App(ctk.CTk):
             self.run_lbl.configure(text=f"{n} download{'s' if n != 1 else ''} paused" if n else "", text_color=WARN)
             self.tabs.set_badge("Catch", n or "", WARN)
 
-    # ================================================================ analysis (all installed mods)
+    # ================================================================ checking the playset
+    # A check reads the active playset's mods (each mod's facts come from the store when it's unchanged)
+    # and works out their conflicts. Results are saved per playset fingerprint (checks.py): coming back to
+    # a combination checked before loads it at once. Checks run when you ask (Check now), before playing
+    # when the playset changed since its last check (you're asked), and at start if Settings say so.
+    def _van(self):
+        return A.vanilla_for(self.game_install(), WORK_DIR)
+
+    def playset_check(self):
+        """(fingerprint, mods) of a check of the active playset, or (None, []) when there's nothing to check.
+        Asked by every redraw of the status bar, so it's worked out again only when something it depends on
+        changed (the mods on disk, the playset, the game, the settings)."""
+        ps = self.playsets
+        if not self.mods_loaded or not ps.name or not self.mod_dir():
+            return None, []
+        key = (self.scan_token, id(self.mods), ps.name, tuple(ps.enabled_keys()), self.game_install(),
+               self.cfg.get("workshop_hints", True))
+        if self._pc_memo and self._pc_memo[0] == key:
+            return self._pc_memo[1]
+        mods = C.check_set(self.mods, ps.enabled_keys())
+        if not mods:
+            res = (None, [])
+        else:
+            van = self._van()
+            res = (C.signature(mods, self.game_install(), van.stamp, self.cfg.get("workshop_hints", True)), mods)
+        self._pc_memo = (key, res)
+        return res
+
+    def check_state(self):
+        """'checked' (the shown check is of exactly this playset), 'stale' (it changed since) or 'none'."""
+        sig, mods = self.playset_check()
+        if sig is None:
+            return "none"
+        return "checked" if sig == self.check_sig else "stale"
+
+    def check_gap(self):
+        """How the active playset differs from the shown check: (mods not in it, mods changed since)."""
+        an = self.analysis
+        if an is None:
+            return len(self.playsets.enabled_keys()), 0
+        have = {m.key: m for m in self.mods}
+        new = [k for k in self.playsets.enabled_keys() if k not in an.facts]
+        changed = [k for k, f in an.facts.items() if k in have and getattr(f.mod, "sig", "") != have[k].sig]
+        return len(new), len(changed)
+
     def schedule_analysis(self, force=False):
-        """Read every installed mod once: roles, what each defines and uses, every pair that collides.
-        Playsets then just look at the pairs they contain. Re-runs only when the mods change."""
-        md = self.mod_dir()
-        if not md or not self.mods_loaded:
+        """Kept for callers: the playset or the mods changed, so look for a saved check of it."""
+        self.refresh_check()
+
+    def refresh_check(self, delay=250):
+        """After a change: a saved check of this exact playset is loaded (in moments); without one, the
+        playset is marked as not checked (Conflicts offers Check now; Play asks)."""
+        if self._check_after:
+            try:
+                self.after_cancel(self._check_after)
+            except Exception:
+                pass
+        self._check_after = self.after(delay, self._refresh_check_now)
+
+    def _refresh_check_now(self):
+        self._check_after = None
+        if self.checking:
             return
-        sig = (md, self.scan_token, self.cfg.get("workshop_hints", True), self.game_install())
-        if sig == self.an_sig and not force:
+        sig, mods = self.playset_check()
+        if sig is None or sig == self.check_sig:
             return
-        self.an_sig = sig
+        if self.history.has(sig):
+            self._load_saved_check(sig, mods)
+        else:
+            self._check_changed()
+
+    def _load_saved_check(self, sig, mods):
         self.an_token += 1
         token = self.an_token
-        mods = list(self.mods)
+        self.analyzing = True
+        self._tab_info()
+        by_key = {m.key: m for m in self.mods}
+        reg = self.registry()
+        wids = {m.key: U.workshop_id(m, reg) for m in mods}
+        van = self._van()
+
+        def work():
+            try:
+                van.knowledge()
+                an = self.history.load(sig, by_key, self.facts_store, van, wids)
+                self.q.put(("check_loaded", token, sig, an))
+            except Exception:
+                error_log(APP_DIR, traceback.format_exc())
+                self.q.put(("check_loaded", token, sig, None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _check_loaded(self, token, sig, an):
+        if token != self.an_token:
+            return
+        self.analyzing = False
+        if an is None:                         # the saved check couldn't be used (its facts were forgotten)
+            self._check_changed()
+            return
+        self._set_analysis(an, sig, f"Loaded the saved check of this playset ({len(an.facts)} mods).")
+
+    def run_check(self, then=None, reason="", overlay=True):
+        """Check the active playset now, with the app covered by a progress screen (Cancel stops it).
+        then: called once the result is in. overlay=False: the loading screen at start shows the progress."""
+        if self.checking:
+            return
+        sig, mods = self.playset_check()
+        if sig is None:
+            if then:
+                then()
+            return
+        van = self._van()
+        store = self.facts_store
+        known = sum(1 for m in mods if store.has(m, van))
+        todo = len(mods) - known
+        sub = (f"Playset \"{self.playsets.name}\": {len(mods)} mods. " +
+               (f"{todo} new or changed mod{'s' if todo != 1 else ''} to read; the other {known} were read before."
+                if known and todo else "All of them were read before: this takes a few moments."
+                if not todo else "Each mod is read once; next time only new or changed mods are."))
+        self.checking = True
+        self.analyzing = True
+        self.check_stop = threading.Event()
+        if overlay:
+            self.overlay = CheckOverlay(self, "Checking your playset" if reason != "play" else
+                                        "Checking your playset before playing", sub, on_cancel=self._cancel_check)
+        self.an_token += 1
+        token = self.an_token
         game_dir = self.game_install()
         reg = self.registry()
         wids = {m.key: U.workshop_id(m, reg) for m in mods}
         hints = self.cfg.get("workshop_hints", True)
-        thumbs_dir = self.thumbs_dir
-        self.analyzing, self.an_progress = True, ""
+        stop = self.check_stop
+        name, game = self.playsets.name, self.game()
         self._tab_info()
+
+        def work():
+            t0 = time.time()
+            try:
+                import net as N
+                meta = {}
+                self.q.put(("check_progress", token, "Reading the mods' Workshop pages", 0.01))
+                try:
+                    meta = A.load_workshop(N.Net(), [w for w in wids.values() if w],
+                                           os.path.join(WORK_DIR, "workshop_pages.json"))
+                except Exception:
+                    error_log(APP_DIR, traceback.format_exc())
+                used_meta = meta if hints else {}
+                an = A.analyze(mods, game_dir, used_meta, wids, cache_dir=WORK_DIR, stop=stop,
+                               store=self.facts_store,
+                               progress=lambda txt, p: self.q.put(("check_progress", token, txt, p)))
+                if stop.is_set():
+                    self.q.put(("check_done", token, sig, None, "cancelled", then))
+                    return
+                self.history.save(sig, an, name, game, time.time() - t0)
+                modscan.save_hashes(HASHES_FILE)
+                self.q.put(("check_done", token, sig, an, "", then))
+            except Exception as e:
+                error_log(APP_DIR, traceback.format_exc())
+                self.q.put(("check_done", token, sig, None, f"{type(e).__name__}: {e}", then))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cancel_check(self):
+        if self.check_stop is not None:
+            self.check_stop.set()
+        if self.overlay is not None:
+            self.overlay.step("Stopping...", 0)
+            if self.overlay.cancel_b is not None:
+                self.overlay.cancel_b.configure(state="disabled")
+
+    def _check_progress(self, token, txt, p):
+        if token != self.an_token:
+            return
+        self.an_progress = txt
+        if self.overlay is not None:
+            self.overlay.step(txt, p)
+        if getattr(self, "_boot_check", False):
+            self.splash.note(txt, 0.33 + 0.37 * p)
+
+    def _check_done(self, token, sig, an, error, then):
+        if token != self.an_token:
+            return
+        self.checking = self.analyzing = False
+        if self.overlay is not None:
+            self.overlay.close()
+            self.overlay = None
+        if error == "cancelled":
+            self.toast("Check cancelled. The playset stays unchecked.", color=WARN)
+            self._check_changed()
+            return
+        if error or an is None:
+            self.log(f"Checking the playset failed: {error}")
+            self.toast(f"Couldn't check the playset ({error})", color=WARN)
+            self._check_changed()
+            return
+        self._set_analysis(an, sig, f"Checked {len(an.facts)} mods in {an.seconds:.1f}s"
+                           + ("" if an.used_vanilla else " (game folder unknown: set it in Settings for a deeper check)")
+                           + ".")
+        if then:
+            self.after(50, then)
+
+    def _set_analysis(self, an, sig, note):
+        self.analysis, self.check_sig = an, sig
+        self.remember_roles(an)
+        self.apply_role_overrides()
+        self.log(note)
+        self.library.refresh_view()
+        self.playsets.analysis_ready()
+        self.conflicts_changed()
+        self.crashes.reanalyse()
+
+    def _check_changed(self):
+        """The shown check and the playset don't match (or do again): every tab that shows it updates."""
+        self.playsets.refresh_derived()
+        self.playsets.render_order()
+        self.conflicts.render()
+        self._tab_info()
+
+    # ---- roles of mods outside the shown check (the Library shows every installed mod)
+    def remember_roles(self, an):
+        for k, f in an.facts.items():
+            if f.role is not None:
+                self.known_roles[k] = f.role
+        try:
+            tmp = ROLES_FILE + ".tmp"
+            with open(tmp, "wb") as fh:
+                pickle.dump(self.known_roles, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, ROLES_FILE)
+        except Exception:
+            pass
+
+    def role_of(self, key):
+        """A mod's role: from the shown check, else from the last check that had it (None if never checked)."""
+        an = self.analysis
+        f = an.facts.get(key) if an is not None else None
+        if f is not None and f.role is not None:
+            return f.role
+        return self.known_roles.get(key)
+
+    def fetch_pictures(self):
+        """Pictures for mods that don't ship their own: from their Workshop pages (in the background)."""
+        if not icons.available() or not self.mods:
+            return
+        mods = list(self.mods)
+        reg = self.registry()
+        wids = {m.key: U.workshop_id(m, reg) for m in mods}
+        thumbs_dir = self.thumbs_dir
 
         def work():
             try:
@@ -1847,96 +2330,14 @@ class App(ctk.CTk):
                 net = N.Net()
                 meta = A.load_workshop(net, [w for w in wids.values() if w],
                                        os.path.join(WORK_DIR, "workshop_pages.json"))
-                used_meta = meta if hints else {}
-                sig = self._analysis_signature(mods, game_dir, used_meta, wids)
-                an = self._cached_analysis(sig, mods)
-                if an is None:
-                    an = A.analyze(mods, game_dir, used_meta, wids, cache_dir=WORK_DIR,
-                                   progress=lambda txt, p: self.q.put(("an_progress", token, txt)))
-                    self._store_analysis(sig, an)
-                self.q.put(("analysis", token, an, ""))
-                if icons.available():                 # pictures for mods that don't ship their own
-                    by_key = {m.key: m for m in mods}
-                    want = {w: (meta.get(w) or {}).get("preview", "") for k, w in wids.items()
-                            if w and not icons.thumb_file(by_key[k])}
-                    if icons.fetch_previews(net, want, thumbs_dir):
-                        self.q.put(("thumbs",))
-            except Exception as e:
-                error_log(APP_DIR, traceback.format_exc())
-                self.q.put(("analysis", token, None, f"{type(e).__name__}: {e}"))
-        threading.Thread(target=work, daemon=True).start()
-
-    ANALYSIS_CACHE_VERSION = 6
-
-    @staticmethod
-    def _analysis_signature(mods, game_dir, meta, wids):
-        """Everything the analysis depends on: when none of it changed, last time's result is reused."""
-        h = hashlib.sha1()
-        h.update(f"v{App.ANALYSIS_CACHE_VERSION}|{game_dir}|".encode())
-        if game_dir:
-            try:
-                h.update(LA.installed_version(game_dir).encode())
+                by_key = {m.key: m for m in mods}
+                want = {w: (meta.get(w) or {}).get("preview", "") for k, w in wids.items()
+                        if w and not icons.thumb_file(by_key[k])}
+                if icons.fetch_previews(net, want, thumbs_dir):
+                    self.q.put(("thumbs",))
             except Exception:
-                pass
-        for m in sorted(mods, key=lambda m: m.key):
-            try:
-                mf = os.path.getmtime(m.modfile) if m.modfile else 0
-            except OSError:
-                mf = 0
-            h.update(f"|{m.key}|{m.folder}|{m.size}|{len(m.files)}|{m.mtime}|{mf}".encode("utf-8", "replace"))
-        for w in sorted(x for x in wids.values() if x):
-            d = meta.get(w) or {}
-            h.update(f"|{w}|{d.get('title', '')}|{len(d.get('text', ''))}|{','.join(d.get('tags', []))}"
-                     .encode("utf-8", "replace"))
-        return h.hexdigest()
-
-    @staticmethod
-    def _cached_analysis(sig, mods):
-        try:
-            with open(os.path.join(WORK_DIR, "analysis_cache.pkl"), "rb") as f:
-                data = pickle.load(f)
-            if data.get("sig") != sig:
-                return None
-            an = data["an"]
-            by_key = {m.key: m for m in mods}
-            for k, fct in an.facts.items():          # point at this session's mod objects
-                if k in by_key:
-                    fct.mod = by_key[k]
-            an.seconds = 0.0
-            an.from_cache = True
-            return an
-        except Exception:
-            return None
-
-    @staticmethod
-    def _store_analysis(sig, an):
-        try:
-            os.makedirs(WORK_DIR, exist_ok=True)
-            tmp = os.path.join(WORK_DIR, "analysis_cache.pkl.tmp")
-            with open(tmp, "wb") as f:
-                pickle.dump({"sig": sig, "an": an}, f, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp, os.path.join(WORK_DIR, "analysis_cache.pkl"))
-        except Exception:
-            error_log(APP_DIR, "Couldn't save the analysis cache:\n" + traceback.format_exc())
-
-    def _analysis_done(self, token, an, error):
-        if token != self.an_token:
-            return
-        self.analyzing = False
-        if error:
-            self.log(f"Mod analysis failed: {error}")
-            self.toast(f"Couldn't analyse the mods ({error})", color=WARN)
-            self._tab_info()
-            return
-        self.analysis = an
-        self.apply_role_overrides()
-        self.log((f"Analysis of {len(an.facts)} mods loaded from the cache (nothing changed)"
-                  if getattr(an, "from_cache", False) else f"Analysed {len(an.facts)} mods in {an.seconds:.1f}s")
-                 + ("" if an.used_vanilla else " (game folder unknown: set it in Settings for a deeper check)") + ".")
-        self.library.refresh_view()
-        self.playsets.analysis_ready()
-        self.conflicts_changed()
-        self.crashes.reanalyse()
+                error_log(APP_DIR, traceback.format_exc())
+        threading.Thread(target=work, daemon=True).start()
 
     def _thumbs_ready(self):
         self._thumbs.clear()
@@ -1969,6 +2370,11 @@ class App(ctk.CTk):
                 found = LA.find_installs(game)
             except Exception:
                 found = []
+            if not found and self.cfg.get("mod_dir"):
+                try:                                   # the game's own logs name the folder it ran from
+                    found = LA.installs_from_logs(game, os.path.dirname(os.path.normpath(self.cfg["mod_dir"])))
+                except Exception:
+                    found = []
             self._installs[game] = found[0] if found else ""
         return self._installs[game]
 
@@ -2116,7 +2522,7 @@ class App(ctk.CTk):
         self._fill_games()
         self._fill_versions()
         self.mods, self.mods_loaded, self.updates, self.checked_at = [], False, {}, 0
-        self.analysis, self.an_sig = None, None
+        self.analysis, self.an_sig, self.check_sig = None, None, None
         self.ask_steam_owned(self.game())
         self.catch.draw_chain_strip()
         self.browse.game_changed()
@@ -2207,7 +2613,10 @@ class App(ctk.CTk):
                     self.toast(f"Added {len(new)} new mod{'s' if len(new) != 1 else ''} to playset "
                                f"\"{self.playsets.name}\" (at the bottom; Auto-sort can place them).")
         self.browse.installed_changed()
-        self.schedule_analysis()
+        self.refresh_check(delay=10)
+        self.fetch_pictures()
+        threading.Thread(target=lambda: (modscan.save_hashes(HASHES_FILE), self.facts_store.prune(list(self.mods))),
+                         daemon=True).start()
         self._tab_info()
 
     # ================================================================ play
@@ -2253,7 +2662,7 @@ class App(ctk.CTk):
         self.save()
         return d
 
-    def play(self, start=True):
+    def play(self, start=True, checked=False):
         md, game = self.mod_dir(), self.game()
         if not md or not game:
             messagebox.showinfo(APP_NAME, "Pick your game at the top first.", parent=self)
@@ -2264,6 +2673,27 @@ class App(ctk.CTk):
         ps = self.playsets
         if not ps.name:
             messagebox.showinfo(APP_NAME, "Make a playset first (Playsets tab).", parent=self)
+            return
+        if start and not checked and not self.checking and self.check_state() == "stale":
+            # the playset changed since its last check: ask (never twice for the same playset)
+            sig, mods = self.playset_check()
+            van = self._van()
+            todo = sum(1 for m in mods if not self.facts_store.has(m, van))
+            new, changed = self.check_gap()
+            parts = ([f"{new} mod{'s' if new != 1 else ''} added"] if new else []) + \
+                ([f"{changed} updated"] if changed else [])
+            why = ("It hasn't been checked yet." if self.analysis is None else
+                   "It changed since its last check" + (f" ({', '.join(parts)})" if parts else "") + ".")
+            if not todo:
+                cost = "Every mod was read before, so it only takes a few moments."
+            elif todo == len(mods):
+                cost = (f"Its {todo} mods are read this once; later checks only read new or updated mods.")
+            else:
+                cost = (f"{todo} new or updated mod{'s' if todo != 1 else ''} to read; the other "
+                        f"{len(mods) - todo} were read before.")
+            AskCheckDialog(self, f"{why} A check finds mods that don't work together, missing mods and lost "
+                                 f"changes before the game starts. {cost}",
+                           lambda c: self._play_choice(c, start))
             return
         have = {m.key: m for m in self.mods}
         keys = [k for k, on in ps.entries if on and k in have]
@@ -2319,6 +2749,12 @@ class App(ctk.CTk):
                 self.q.put(("play_failed", "The game closed right away. Steam isn't running, and Steam copies "
                                            "of the game need it."))
         threading.Thread(target=watch, daemon=True).start()
+
+    def _play_choice(self, choice, start):
+        if choice == "check":
+            self.run_check(then=lambda: self.play(start, checked=True), reason="play")
+        elif choice == "play":
+            self.play(start, checked=True)
 
     # ================================================================ downloads
     def start_run(self):
@@ -2528,8 +2964,9 @@ class App(ctk.CTk):
             "bridge": self._bridge_event,
             "scan": self._scanned,
             "updates": lambda *a: (self.library.show_updates(*a), self._tab_info()),
-            "analysis": self._analysis_done,
-            "an_progress": self._an_progress,
+            "check_loaded": self._check_loaded,
+            "check_progress": self._check_progress,
+            "check_done": self._check_done,
             "thumbs": lambda: self._thumbs_ready(),
             "ws_page": lambda *a: self.browse.page_loaded(*a),
             "ws_thumb": lambda *a: self.browse.thumb_ready(*a),
@@ -2572,11 +3009,6 @@ class App(ctk.CTk):
         self.run_done, self.run_total = done, total
         self._run_status()
 
-    def _an_progress(self, token, txt):
-        if token == self.an_token:
-            self.an_progress = txt
-            self._tab_info()
-
     def _bridge_event(self, e):
         if e.get("event") == "verify_needed":
             what = "this download" if e.get("kind") == "file" else "its pages"
@@ -2606,7 +3038,7 @@ class App(ctk.CTk):
         self.ask_steam_owned(self.game())
         self.splash.step("Reading your mods...", 0.25)
         self.rescan()
-        self._boot_wait(lambda: self.mods_loaded, 30, self._boot_analysis)
+        self._boot_wait(lambda: self.mods_loaded, 600, self._boot_analysis)
 
     def _boot_wait(self, ready, limit, then, every=80):
         t0 = time.time()
@@ -2619,14 +3051,34 @@ class App(ctk.CTk):
         check()
 
     def _boot_analysis(self):
-        self.splash.step(f"Checking your {len(self.mods)} mods...", 0.35)
+        """The playset's saved check, if there's one of it as it is now; else a check if Settings say to
+        check at every start; else nothing (Play asks before starting the game)."""
+        if self._check_after:
+            try:
+                self.after_cancel(self._check_after)
+            except Exception:
+                pass
+            self._check_after = None
+        sig, mods = self.playset_check()
+        if sig is None or sig == self.check_sig:
+            self._boot_pictures()
+            return
+        if self.history.has(sig):
+            self.splash.step("Loading the saved check of your playset...", 0.4)
+            self._load_saved_check(sig, mods)
+            self._boot_wait(lambda: not self.analyzing, 90, self._boot_pictures, every=100)
+            return
+        if not self.cfg.get("check_at_start", False):
+            self._boot_pictures()
+            return
+        self.splash.step(f"Checking your playset ({len(mods)} mods)...", 0.33)
+        self._boot_check = True
+        self.run_check(overlay=False)
 
-        def ready():
-            if self.an_progress:
-                self.splash.step(f"Checking your mods: {self.an_progress}...", 0.35 + 0.3 * min(1, (time.time() - t0) / 30))
-            return not self.analyzing
-        t0 = time.time()
-        self._boot_wait(ready, 45 if self.mods else 1, self._boot_pictures, every=150)
+        def done():
+            self._boot_check = False
+            self._boot_pictures()
+        self._boot_wait(lambda: not self.checking, 24 * 3600, done, every=150)
 
     def _boot_pictures(self):
         self.splash.step("Preparing pictures...", 0.68)
@@ -2810,8 +3262,9 @@ class App(ctk.CTk):
         if dirs_changed:
             self._installs.clear()
             self._fill_versions()
+        self.history.set_keep(cfg.get("check_history", C.DEFAULT_KEEP))
         if hints_changed or dirs_changed:
-            self.schedule_analysis(force=True)
+            self.refresh_check()
         elif older_changed:
             self.playsets.refresh_derived()
         en = self.effective_enabled()

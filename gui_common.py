@@ -17,7 +17,7 @@ import customtkinter as ctk
 
 import glyphs
 
-APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "2.0.1", "Adromedary"
+APP_NAME, APP_VERSION, AUTHOR = "Adromedary's Paradoxical Launcher", "2.1", "Adromedary"
 APP_SHORT = "Paradoxical Launcher"
 IS_WIN = sys.platform.startswith("win")
 # where a game's own folder is, in words for the player
@@ -211,6 +211,54 @@ def fit_geometry(win, w, h, parent=None):
     else:
         x, y = (sw - w) / 2, (sh - h) / 3
     win.geometry(f"{w}x{h}+{int(max(0, x))}+{int(max(0, y))}")
+
+
+def work_area(win):
+    """(x, y, width, height) of the usable part (without the taskbar) of the monitor the mouse is on, in the
+    pixels Tk places windows in. Windows: asks the system per monitor (an ultrawide, or a second screen,
+    gets its own middle); elsewhere: the screen Tk reports."""
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    if IS_WIN:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _MI(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                            ("dwFlags", wintypes.DWORD)]
+            u32 = ctypes.windll.user32
+            pt = wintypes.POINT()
+            u32.GetCursorPos(ctypes.byref(pt))
+            mon = u32.MonitorFromPoint(pt, 2)                  # the nearest monitor
+            mi = _MI()
+            mi.cbSize = ctypes.sizeof(_MI)
+            if mon and u32.GetMonitorInfoW(mon, ctypes.byref(mi)):
+                # the system's numbers and Tk's agree when the app is DPI-aware; if not, scale them over
+                k = sw / max(1, u32.GetSystemMetrics(0))
+                r = mi.rcWork
+                return (round(r.left * k), round(r.top * k), round((r.right - r.left) * k),
+                        round((r.bottom - r.top) * k))
+        except Exception:
+            pass
+    return 0, 0, sw, sh
+
+
+def center_on_screen(win, w=None, h=None):
+    """Put a window in the exact middle of the monitor's usable area, measured from the size it really
+    has on screen (after scaling), so it's centred at every resolution and display scale. w / h: real
+    pixels to give it first (optional)."""
+    try:
+        if w and h:
+            tk.Toplevel.geometry(win, f"{int(w)}x{int(h)}")
+        win.update_idletasks()
+        rw = win.winfo_width() if win.winfo_width() > 1 else (w or win.winfo_reqwidth())
+        rh = win.winfo_height() if win.winfo_height() > 1 else (h or win.winfo_reqheight())
+        ax, ay, aw, ah = work_area(win)
+        x, y = ax + max(0, (aw - rw) // 2), ay + max(0, (ah - rh) // 2)
+        tk.Toplevel.geometry(win, f"+{int(x)}+{int(y)}")
+        return rw, rh
+    except Exception:
+        return None
 
 
 def pick(color):

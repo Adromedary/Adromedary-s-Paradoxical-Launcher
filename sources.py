@@ -9,6 +9,7 @@ Every source exposes:
 Sources save their download into item.stage; the engine then installs it.
 """
 import difflib
+import functools
 import os
 import re
 import shutil
@@ -31,6 +32,7 @@ _STOP = {"mod", "mods", "the", "a", "an", "for", "of", "and", "pack", "update", 
 _ROMAN = {"ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
 
 
+@functools.lru_cache(maxsize=65536)
 def clean_title(s):
     """Readable title for search boxes: drops [tags], (notes), *flags* and version numbers."""
     s = re.sub(r"[\[\(\{][^\]\)\}]*[\]\)\}]", " ", s)
@@ -40,19 +42,30 @@ def clean_title(s):
 
 
 def tokens(s):
+    return list(_tokens(s))
+
+
+@functools.lru_cache(maxsize=65536)
+def _tokens(s):
     s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", clean_title(s))
     s = re.sub(r"[^0-9a-zA-Z]+", " ", s.lower())
-    return [_ROMAN.get(t, t) for t in s.split() if t not in _STOP]
+    return tuple(_ROMAN.get(t, t) for t in s.split() if t not in _STOP)
 
 
 def _directional(ta, tb):
     total = 0.0
     for t in ta:
-        best = max(difflib.SequenceMatcher(None, t, u).ratio() for u in tb)
+        best = max(_word_ratio(t, u) for u in tb)
         total += best if best >= 0.85 else 0.0
     return total / len(ta)
 
 
+@functools.lru_cache(maxsize=65536)
+def _word_ratio(t, u):
+    return difflib.SequenceMatcher(None, t, u).ratio()
+
+
+@functools.lru_cache(maxsize=131072)
 def similarity(a, b):
     """0..1. Strict: extra or missing words lower the score, so different mods don't match."""
     ta, tb = tokens(a), tokens(b)

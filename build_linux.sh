@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Adromedary's Paradoxical Launcher 2.0.1: build a single Linux program (dist/ParadoxicalLauncher).
+# Adromedary's Paradoxical Launcher 2.1: build a single Linux program (dist/ParadoxicalLauncher).
 # Needs Python 3.10+ with Tk (Debian/Ubuntu: sudo apt install python3 python3-venv python3-tk;
 # Fedora: sudo dnf install python3 python3-tkinter; Arch: sudo pacman -S python tk).
 set -e
 cd "$(dirname "$0")"
-echo "=== Adromedary's Paradoxical Launcher 2.0.1: building for Linux ==="
+echo "=== Adromedary's Paradoxical Launcher 2.1: building for Linux ==="
 PY=${PYTHON:-python3}
 if ! command -v "$PY" >/dev/null 2>&1; then
   echo "Python 3 was not found. Install python3, python3-venv and python3-tk from your distribution."; exit 1

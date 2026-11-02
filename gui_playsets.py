@@ -284,13 +284,14 @@ class PlaysetsPage(ctk.CTkFrame):
         an = self.an
         if an is None:
             self.win, self.reasons, self.issues, self.mod_issues = {}, {}, [], {}
-            self.status.configure(text="Analysing your mods..." if self.app.analyzing else "", text_color=MUTED)
+            self.status.configure(text="Checking the playset..." if self.app.analyzing else
+                                  "Not checked yet: the order's effects show after a check", text_color=MUTED)
             self._render_health()
             return
         order = [k for k in self.enabled_keys() if k in an.facts]
         self.win = L.winners(an, order, set(order))
         self.reasons, broken = L.explain(an, order, rules=self.rules, older_first=self.older_first())
-        self.issues = A.playset_issues(an, order, self.app.game_version())
+        self.issues = A.playset_issues(an, order, self.app.game_version(), installed=self.app.mods)
         self.mod_issues = {}
         for i in self.issues:
             for k in i.mods:
@@ -308,9 +309,13 @@ class PlaysetsPage(ctk.CTkFrame):
     def _render_health(self):
         for w in self.health.winfo_children():
             w.destroy()
+        stale = bool(self.name) and not self.app.analyzing and self.app.check_state() == "stale"
         if self.an is None or not self.name:
-            ctk.CTkLabel(self.health, text="Checking compatibility..." if self.app.analyzing else "",
-                         text_color=MUTED, font=font(11)).pack(padx=10, pady=8)
+            ctk.CTkLabel(self.health, text="Checking compatibility..." if self.app.analyzing else
+                         "Not checked yet" if stale else "", text_color=MUTED, font=font(11)).pack(padx=10, pady=8)
+            if stale:
+                button(self.health, "Check now", lambda: self.app.run_check(), primary=True, height=28,
+                       icon_name="refresh", icon_size=13).pack(fill="x", padx=10, pady=(0, 10))
             return
         counts = A.summary(self.issues)
         ctk.CTkLabel(self.health, text="Compatibility", text_color=TEXT, font=font(12, "bold"), anchor="w"
@@ -325,6 +330,11 @@ class PlaysetsPage(ctk.CTkFrame):
         if not any(counts[s] for s in ("critical", "high", "medium", "low")):
             ctk.CTkLabel(row, text="\u2713 No problems found", text_color=OK, fg_color=OK_SOFT, corner_radius=8,
                          height=24, padx=8, font=font(12, "bold")).pack(side="left")
+        if stale:
+            ctk.CTkLabel(self.health, text="From the last check: the playset changed since.", text_color=ACCENT,
+                         font=font(11), anchor="w", justify="left", wraplength=220).pack(fill="x", padx=12, pady=(6, 0))
+            button(self.health, "Check now", lambda: self.app.run_check(), primary=True, height=28,
+                   icon_name="refresh", icon_size=13).pack(fill="x", padx=10, pady=(6, 0))
         button(self.health, "Open the Conflicts tab", lambda: self.app.show_tab("Conflicts"), height=28,
                icon_name="conflicts", icon_size=13).pack(fill="x", padx=10, pady=(8, 10))
 
@@ -370,7 +380,8 @@ class PlaysetsPage(ctk.CTkFrame):
             if on and m:
                 n_on += 1
             name = m.name if m else f"{k} (not installed)"
-            role = an.facts[k].role.role if an and k in an.facts and an.facts[k].role else R.UNKNOWN
+            r_ = self.app.role_of(k)
+            role = r_.role if r_ else R.UNKNOWN
             files, tag = "", ""
             w = self.win.get(k) if an else None
             if w and on:
@@ -424,14 +435,14 @@ class PlaysetsPage(ctk.CTkFrame):
         t.delete(*t.get_children())
         self.extra_rows.clear()
         listed = {k for k, _ in self.entries}
-        an = self.an
         extra = sorted((m for m in self.app.mods if m.key not in listed), key=lambda m: m.name.lower())
         n_all = len(extra)
         q = self.extra_search.get().strip().lower()
         if q:
             extra = [m for m in extra if q in m.name.lower()]
         for i, m in enumerate(extra):
-            role = an.facts[m.key].role.role.name if an and m.key in an.facts and an.facts[m.key].role else ""
+            r_ = self.app.role_of(m.key)
+            role = r_.role.name if r_ else ""
             rid = t.insert("", "end", values=(m.name, role, modscan.human_size(m.size)), tags=("odd",) if i % 2 else ())
             self.extra_rows[rid] = m.key
         self.extra_lbl.configure(text=f"Not in this playset ({n_all})")
@@ -864,7 +875,7 @@ class PlaysetsPage(ctk.CTkFrame):
         return (res, sum(len(v["loses"]) for v in before.values()),
                 sum(len(v["loses"]) for v in after.values()))
 
-    def auto_sort(self):
+    def auto_sort(self, after_check=False):
         if not self.entries:
             return
         keys = self.enabled_keys()
@@ -872,10 +883,14 @@ class PlaysetsPage(ctk.CTkFrame):
             self.app.toast("Turn on at least one mod first.")
             return
         an = self.an
-        if an is None or self.app.analyzing or any(k not in an.facts for k in keys):
-            self.pending_sort = True
-            self.app.schedule_analysis()
-            self.status.configure(text="Analysing before sorting...")
+        if self.app.checking:
+            return
+        if an is None or self.app.check_state() != "checked" or any(k not in an.facts for k in keys):
+            if after_check:
+                self.app.toast("The playset changed during the check. Press Auto-sort again.")
+                return
+            # sorting needs a check of exactly this playset
+            self.app.run_check(then=lambda: self.auto_sort(after_check=True))
             return
         res, lost_before, lost_after = self.sort_result()
         SortPreview(self, an, keys, res, lost_before, lost_after)

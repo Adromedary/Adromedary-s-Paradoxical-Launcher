@@ -178,6 +178,27 @@ def _registry_installs(names):
     return [os.path.normpath(p) for p in dict.fromkeys(out) if os.path.isdir(p)]
 
 
+_MOUNTED = re.compile(r"Mounted Data: (.+)/game(?:/dlc/[^/]+)?/?\s*$")
+
+
+def installs_from_logs(game, user_dir):
+    """Install folders the game itself names in its last logs ("Mounted Data: <install>/game/..."), for
+    copies no Steam library, GOG key or programs list knows (other installers, moved folders)."""
+    out = []
+    for log in (os.path.join(user_dir, "logs", "debug.log"), os.path.join(user_dir, "logs", "game.log")):
+        try:
+            with open(log, encoding="utf-8", errors="replace") as f:
+                for n, line in enumerate(f):
+                    if n > 400:
+                        break
+                    m = _MOUNTED.search(line)
+                    if m:
+                        out.append(os.path.normpath(m.group(1).strip()))
+        except OSError:
+            continue
+    return [d for d in dict.fromkeys(out) if looks_like_install(game, d)]
+
+
 def looks_like_install(game, folder):
     if not folder or not os.path.isdir(folder):
         return False

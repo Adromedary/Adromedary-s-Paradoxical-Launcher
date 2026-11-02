@@ -4,11 +4,14 @@ relative path (e.g. common/traits/00_traits.txt). The game loads only one of the
 version silently replaces the other's.
 """
 import hashlib
+import json
 import os
 import re
 import shutil
 import threading
 import zipfile
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 
 from installer import DOC_FILES, descriptor_list, descriptor_value, descriptor_values, read_text
 
@@ -29,6 +32,8 @@ class ModInfo:
         self.missing = False
         self.duplicate_of = None     # another .mod entry pointing at the same folder
         self.conflicts = {}          # other ModInfo -> sorted list of shared paths
+        self.sizes = {}              # relative path -> bytes (files that count for conflicts)
+        self.sig = ""                # changes whenever its files change (for the saved checks)
 
     @property
     def key(self):
@@ -61,13 +66,67 @@ def _counts(rel):
     return not DOC_FILES.search(rel.rsplit("/", 1)[-1])
 
 
-def scan(mod_dir, stop=None, ignored=()):
-    """Returns (mods sorted by name, number of mods with conflicts)."""
+def _walk(folder, stop=None):
+    """Every file under folder as (relative path, full path, size, mtime, ctime), hidden folders skipped.
+    os.scandir hands out each file's size and dates with the folder listing on Windows, so this costs one
+    call per folder instead of one per file (the old os.walk + os.stat did both)."""
+    out = []
+    stack = [("", folder)]
+    while stack:
+        if stop is not None and stop.is_set():
+            return out
+        prefix, d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                try:
+                    if e.is_dir():
+                        if not e.name.startswith(".") and not e.is_symlink():
+                            stack.append((prefix + e.name + "/", e.path))
+                        continue
+                    st = e.stat()
+                except OSError:
+                    continue
+                out.append((prefix + e.name, e.path, st.st_size, st.st_mtime, st.st_ctime))
+    return out
+
+
+def _fill(m, stop=None):
+    """A mod's files, sizes and dates from its folder."""
+    files = _walk(m.folder, stop)
+    newest = landed_max = 0.0
+    total = 0
+    win = os.name == "nt"
+    for rel, full, size, mtime, ctime in files:
+        total += size
+        if mtime > newest:
+            newest = mtime
+        # Windows: st_ctime is when the file was created here, i.e. when it arrived
+        landed = max(mtime, ctime) if win else mtime
+        if landed > landed_max:
+            landed_max = landed
+        rl = rel.lower()
+        if _counts(rl):
+            m.files.add(rl)
+            m.paths[rl] = full
+            m.sizes[rl] = size
+    m.size, m.mtime, m.installed_at = total, newest, landed_max
+    names = "\n".join(sorted(m.files))
+    m.sig = f"{len(files)}:{total}:{int(newest)}:{zlib.crc32(names.encode('utf-8', 'replace')):08x}"
+
+
+def scan(mod_dir, stop=None, ignored=(), workers=8):
+    """Returns (mods sorted by name, number of mods with conflicts). The mods' folders are listed side by
+    side (several at once: the disk waits, not the processor)."""
     mods = []
     try:
         entries = sorted(os.listdir(mod_dir))
     except OSError:
         return [], 0
+    walk = []
     for f in entries:
         p = os.path.join(mod_dir, f)
         if not (f.lower().endswith(".mod") and os.path.isfile(p)):
@@ -93,47 +152,40 @@ def scan(mod_dir, stop=None, ignored=()):
         m.replace_paths = sorted({v.replace("\\", "/").strip("/").lower()
                                   for v in descriptor_values(text, "replace_path") if v.strip("/")})
         if folder and os.path.isdir(folder):
-            for root, dirs, files in os.walk(folder):
-                if stop and stop.is_set():
-                    return [], 0
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
-                for fn in files:
-                    full = os.path.join(root, fn)
-                    try:
-                        st = os.stat(full)
-                        m.size += st.st_size
-                        m.mtime = max(m.mtime, st.st_mtime)
-                        # Windows: st_ctime is when the file was created here, i.e. when it arrived
-                        landed = st.st_ctime if os.name == "nt" else st.st_mtime
-                        m.installed_at = max(m.installed_at, st.st_mtime, landed)
-                    except OSError:
-                        pass
-                    rel = os.path.relpath(full, folder).replace("\\", "/").lower()
-                    if _counts(rel):
-                        m.files.add(rel)
-                        m.paths[rel] = full
+            walk.append(m)
         elif archive and os.path.isfile(archive):
             try:
                 m.size, m.mtime = os.path.getsize(archive), os.path.getmtime(archive)
                 m.installed_at = max(m.mtime, os.path.getctime(archive) if os.name == "nt" else m.mtime)
                 with zipfile.ZipFile(archive) as z:
-                    m.files = {n.lower() for n in z.namelist() if not n.endswith("/") and _counts(n.lower())}
+                    for zi in z.infolist():
+                        n = zi.filename.lower()
+                        if not n.endswith("/") and _counts(n):
+                            m.files.add(n)
+                            m.sizes[n] = zi.file_size
+                m.sig = f"zip:{m.size}:{int(m.mtime)}"
             except Exception:
                 m.missing = True
         else:
             m.missing = True
         mods.append(m)
-
+    if walk:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(walk)))) as ex:
+            list(ex.map(lambda m: _fill(m, stop), walk))
+    if stop is not None and stop.is_set():
+        return [], 0
     compute_conflicts(mods, ignored)
     mods.sort(key=lambda m: m.name.lower())
     return mods, sum(1 for m in mods if m.conflicts)
 
 
 _hash_cache, _hash_lock = {}, threading.Lock()
+_hash_dirty = [False]
 
 
 def file_hash(path):
-    """SHA-1 of a file, cached by (path, size, mtime). '' if unreadable."""
+    """SHA-1 of a file, cached by (path, size, mtime) (kept between starts: load_hashes / save_hashes).
+    '' if unreadable."""
     try:
         st = os.stat(path)
     except OSError:
@@ -151,7 +203,54 @@ def file_hash(path):
         return ""
     with _hash_lock:
         _hash_cache[key] = h.hexdigest()
+        _hash_dirty[0] = True
     return _hash_cache[key]
+
+
+def same_file(p, q, size_p=None, size_q=None):
+    """Are two files byte for byte the same? Different sizes answer at once; only same-size files are read
+    (and their fingerprints remembered)."""
+    if not p or not q:
+        return False
+    try:
+        sp = os.path.getsize(p) if size_p is None else size_p
+        sq = os.path.getsize(q) if size_q is None else size_q
+    except OSError:
+        return False
+    if sp != sq:
+        return False
+    a = file_hash(p)
+    return bool(a) and a == file_hash(q)
+
+
+def load_hashes(path):
+    """The file fingerprints of earlier runs (only files that still look the same are kept)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    with _hash_lock:
+        for p, (size, mtime, h) in data.items():
+            _hash_cache[(p, size, mtime)] = h
+
+
+def save_hashes(path, limit=200000):
+    with _hash_lock:
+        if not _hash_dirty[0]:
+            return
+        items = list(_hash_cache.items())[-limit:]
+        _hash_dirty[0] = False
+    data = {}
+    for (p, size, mtime), h in items:
+        data[p] = (size, mtime, h)
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def compute_conflicts(mods, ignored=()):
@@ -179,10 +278,15 @@ def compute_conflicts(mods, ignored=()):
     for rel, who in owners.items():
         if len(who) < 2:
             continue
-        digest = {}
+        # byte-identical copies are found by size first: only copies of the same size get read
+        by_size = {}
         for a in who:
-            p = a.paths.get(rel)
-            digest[a] = file_hash(p) if p else ""
+            by_size.setdefault(a.sizes.get(rel, -1), []).append(a)
+        digest = {}
+        for size, group in by_size.items():
+            for a in group:
+                p = a.paths.get(rel)
+                digest[a] = file_hash(p) if p and len(group) > 1 and size >= 0 else ("" if not p else f"#{id(a)}")
         for a in who:
             for b in who:
                 if a is b:

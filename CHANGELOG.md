@@ -1,5 +1,78 @@
 # Changelog
 
+## 2.1 (2026-11-02)
+
+The conflict check, rebuilt, many times faster, and only when you want it.
+
+### Speed
+* Each mod is read once: what it defines and uses is kept on disk (`.work/facts`, per mod version and game
+  version), so a check only reads mods that are new or updated. Before, every check read every installed
+  mod again, and any update of any mod started a full check.
+* Mods are read on several processor cores at once (separate processes; big mods in pieces of about 6 MB
+  so one total conversion doesn't hold the others up). Where that can't start, reading falls back to one
+  process.
+* Only what a check needs is read: texts in one language (English when the mod has it; a text key only
+  clashes within one language), no pictures, models, sounds or interface sprites (their size stands in).
+* Files that several mods replace are compared once per copy, with what each copy changed from the game
+  kept from reading, instead of once per pair of mods.
+* Finding compatches, declared dependencies and name matches no longer compares every mod with every
+  other for every conflict (the slowest part of big playsets).
+* Listing mods: one call per folder (`os.scandir`) instead of one per file, several mod folders at once,
+  and two copies of a shared file are only read when their sizes match (fingerprints kept between starts).
+* Measured on a 450-mod library: from 7 minutes to 2 minutes for a first check on two cores, about
+  25 seconds when every mod was read before, and moments for a playset checked before.
+
+### Checks per playset, saved, when you want them
+* A check covers the active playset's mods (plus installed compatches and needed mods that are off, so it
+  can say "turn it on").
+* It runs when you press Check now (Conflicts, Playsets), before Auto-sort, and when you press Play after
+  the playset changed since its last check: the app asks (Check, then play / Play without checking).
+  Settings > Checks & sorting (and the first-start window) can make it check at every start instead.
+* Every check is saved with its playset (`.work/checks`; the last 100 by default, adjustable). A
+  combination checked before (a test mod turned off again, another playset) loads at once. The load order
+  isn't part of it: which mod wins each file, Auto-sort and the playset's problems come from the check
+  instantly.
+* A check covers the app with a progress screen (bar, what it's reading, elapsed time, Cancel).
+* When the playset changed since the check shown, Conflicts and Playsets say so, with Check now.
+
+### Loading screen
+* Centred on the monitor it opens on (from its real size on screen and the monitor's usable area), so it
+  sits in the middle on ultrawide and scaled displays too. The first-start window is centred the same way.
+* A real progress bar with a percentage that moves smoothly.
+
+### Conflicts, rebuilt
+* The app reads the game's own files once (cached per game version) and learns which script words refer
+  to which kind of thing (`add_trait` → traits, `trigger_event` → events, `title:` → titles...), which
+  folders merge object by object and which replace whole files, nested definitions (titles, trait groups,
+  laws, faiths) and the game's renames.
+* For each mod it knows what it adds, what it changes of the game, what it really uses from other mods and
+  what it only checks for. Only uses make a requirement; checks (`has_trait`, compatibility files, "is this
+  mod loaded" guards) mean optional extras ("Grand Remembrance has extras for Daughters of Lust").
+* Workshop pages: "incompatible" needs a real statement naming the other mod; "report conflicts with
+  another mod" or "compatibility break with the previous version" no longer count, and short names like
+  "MOD" no longer match ordinary words.
+* Recognised relations: packs that already contain another mod (one entry instead of dozens), submods and
+  compatches overriding their base mod on purpose, placeholders for another mod's things, one author's
+  shared code, blocks the game merges (genes, coat of arms), unchanged copies of game objects that undo
+  another mod's change.
+* Grading by how much is lost (folder weight, size of each object, number of objects); cosmetic-only
+  overlaps capped; interface windows graded by how much the smaller side changed.
+* New checks: a mod using things that exist nowhere (not in this game version or any installed mod, with
+  the game's renames such as `scholar` → `erudite`), and effect blocks a mod puts into the game's own
+  on-actions.
+* Compatch reports: how the two mods relate, the game's notes on each kind of file, every object with the
+  game's version, each mod's and what each changed (diffs), a patch plan with file names that sort after
+  every rival, and a stricter AI prompt. Code is complete (shared files include the game's own copy);
+  only a report too long for an AI chat shortens its biggest pieces, marked with where the full text is,
+  and the prompt tells the AI to ask for those instead of guessing.
+* The same mods always give the same result (files are read in a fixed order; texts are compared in
+  English when a mod has English).
+
+### Other
+* The game's install folder is also found from the game's own logs (`Mounted Data: …/game`), for copies
+  no Steam library, GOG key or installed-programs entry knows.
+* Conflicts: things that exist nowhere say "Needs an update", the game's own on-actions "Up to its author".
+
 ## 2.0.1 (2026-10-24)
 
 Linux support and a fix.
