@@ -1,6 +1,6 @@
 # Adromedary's Paradoxical Launcher
 
-*Version 2.1 · by Adromedary*
+*Version 2.2 · by Adromedary*
 
 A mod manager and launcher for Paradox games: **Crusader Kings III**, **Europa Universalis IV / V**,
 **Stellaris**, **Hearts of Iron IV**, **Victoria 3** and **Imperator: Rome**.
@@ -10,6 +10,14 @@ see which ones clash and why, sort them into a working load order, and start the
 No Paradox launcher needed.
 
 ![Browse, panel view](docs/screenshots/browse-panels.png)
+
+## New in 2.2
+
+* **DLC tab**: every installed DLC with its picture; turn any of them off (or all at once), like the official
+  launcher. The choice goes into dlc_load.json and is written again on every Play.
+* **Ready for Crusader Kings III 1.21 and Silk and Silver**: buildings in their new subfolders count as one set,
+  the new folders (trade goods, roads, districts...) are named in conflicts, and mods that still ship game
+  files where 1.20 kept them are flagged.
 
 ## New in 2.1
 
@@ -188,18 +196,33 @@ On Linux, `./run_linux.sh` does all of that in a private environment (`.venv`) o
 
 ## Code map
 
+    paradoxical_launcher.py    the main window: settings, help, What's new, welcome, event loop (run this)
+    build.bat, build_linux.sh, run_linux.sh, install_desktop_entry.sh
+    assets/icon.ico            the app's icon (bundled into the .exe)
+    docs/screenshots/
+    app/
+      core/       mods, games, DLC, playsets, updates: no windows
+      online/     Steam, the Workshop, downloads
+      analysis/   reading mods against the game: conflicts, saved checks, roles, crashes
+      gui/        every tab and window, the palettes, icons and Help
+
 | File | |
 |---|---|
-| `paradoxical_launcher.py` | main window, settings, help, What's new, welcome, event loop |
-| `gui_browse.py`, `gui_catch.py`, `gui_library.py`, `gui_playsets.py`, `gui_conflicts.py`, `gui_crash.py` | the tabs |
-| `gui_common.py`, `gui_viewer.py`, `glyphs.py`, `icons.py`, `cards.py`, `appicon.py` | look: the two palettes, shared widgets (tabs, detail panels, dividers, tips, right-click menus), the picture viewer, drawn icons, pictures, Browse cards, app icon |
-| `workshop.py` | reading the Steam Workshop (browse pages, item details) |
-| `engine.py`, `sources.py`, `net.py`, `installer.py`, `browser_helper.py` | downloading and installing |
-| `modscan.py`, `script.py`, `gamedb.py`, `analysis.py`, `roles.py`, `loadorder.py` | reading mods, the game's rules and learned references, conflicts, roles, Auto-sort |
-| `compat.py`, `report.py` | finding compatches on the Workshop, compatch reports |
-| `crash.py` | crash analysis: reading crash folders and logs, suspects, the culprit hunt, crash reports |
-| `launcher.py`, `profiles.py`, `updates.py`, `versions.py`, `storage.py` | games, playsets, updates, versions, cached-file clean-up |
-| `help_text.py` | the Help window's text |
+| `app/core/launcher.py`, `dlcs.py`, `profiles.py`, `updates.py`, `versions.py`, `storage.py` | games, DLC, playsets, updates, versions, cached-file clean-up |
+| `app/core/engine.py`, `installer.py` | downloading and installing |
+| `app/core/modscan.py`, `script.py`, `loadorder.py` | reading mods and Paradox script, Auto-sort |
+| `app/online/net.py`, `sources.py`, `browser_helper.py` | web requests, Steam metadata and download sources, the "verify you are human" window |
+| `app/online/workshop.py`, `compat.py` | reading the Steam Workshop (browse pages, item details), finding compatches on it |
+| `app/analysis/gamedb.py`, `analysis.py`, `checks.py`, `roles.py` | the game's rules and learned references, conflicts, saved playset checks, roles |
+| `app/analysis/report.py` | compatch reports |
+| `app/analysis/crash.py` | crash analysis: reading crash folders and logs, suspects, the culprit hunt, crash reports |
+| `app/gui/browse.py`, `catch.py`, `library.py`, `playsets.py`, `dlc.py`, `conflicts.py`, `crash.py` | the tabs |
+| `app/gui/common.py`, `viewer.py`, `glyphs.py`, `icons.py`, `cards.py`, `appicon.py` | look: the two palettes, shared widgets (tabs, detail panels, dividers, tips, right-click menus), the picture viewer, drawn icons, pictures, Browse cards, app icon |
+| `app/gui/help_text.py` | the Help window's text |
+| `app/legacy.py` | reads files saved before the move to folders (saved checks, mods' facts, roles) |
+
+Settings, `.work`, downloads and the other files the app keeps stay next to `paradoxical_launcher.py` when it
+runs from source, and next to the program when it's built.
 
 ## Notes
 

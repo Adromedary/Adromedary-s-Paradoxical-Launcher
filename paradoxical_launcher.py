@@ -1,5 +1,5 @@
 """
-Adromedary's Paradoxical Launcher 1.0
+Adromedary's Paradoxical Launcher
 
 A mod manager and launcher for Paradox games (Crusader Kings III, Europa Universalis IV/V, Stellaris,
 Hearts of Iron IV, Victoria 3, Imperator):
@@ -9,8 +9,11 @@ Catch:     downloads mods (or whole collections) through a chain of sites and in
            game's mod folder. Downloads pause and resume.
 Library:   every installed mod with its role, conflicts, version notes and Workshop updates.
 Playsets:  named mod lists in load order, Auto-sort, and Play to start the game with them directly.
+DLC:       the game's DLC, each one switched on or off, like the official launcher.
 Conflicts: everything that can go wrong in the active playset, explained.
 Crashes:   after a crash: the mods most likely to blame, with the evidence, and a step-by-step culprit hunt.
+
+This file is the main window; the rest of the code is in app/ (core, online, analysis, gui).
 
 Run:   python paradoxical_launcher.py
 Build: double-click build.bat  (dist\\ParadoxicalLauncher.exe), or on Linux ./build_linux.sh  (dist/ParadoxicalLauncher)
@@ -31,33 +34,36 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-import analysis as A
-import appicon
-import checks as C
-import engine as E
-import help_text as HT
-import icons
-import installer
-import launcher as LA
-import modscan
-import sources as S
-import storage as ST
-import updates as U
-import versions as V
-from browser_helper import BrowserBridge
-from gui_browse import BrowsePage
-from gui_catch import KIND_COLOR, CatchPage
-from gui_common import DATA_HINT, DATA_ROOT_HINT, IS_WIN
-from gui_common import (COLORFUL, PALETTE, TAB_COLORS, Ribbon, ACCENT, ACCENT_HI, ACCENT_SOFT, APP_DIR, APP_NAME, APP_SHORT, APP_VERSION, AUTHOR, BG, BORDER,
-                        CARD, CARD_HI, COLUMNS, CRIT, ERR, FAINT, MUTED, MUTED_SOFT, OK, PLAY, PLAY_HI, SHADOW,
-                        SURFACE, TEAL, TEAL_SOFT, TEXT, THEMES, WARN, WARN_ICON, WARN_SOFT, WHITE,
-                        Banner, button, card, center_on_screen, ctk_image, error_log, fit_geometry, font, icon,
-                        open_folder, pick, px, set_root, Split, style_trees, TabBar, Tooltip, units)
-from gui_conflicts import ConflictsPage
-from gui_crash import CrashPage
-from gui_library import LibraryPage
-from gui_playsets import PlaysetsPage
-from profiles import Profiles
+from app import legacy
+from app.analysis import analysis as A
+from app.analysis import checks as C
+from app.core import dlcs as D
+from app.core import engine as E
+from app.core import installer
+from app.core import launcher as LA
+from app.core import modscan
+from app.core import storage as ST
+from app.core import updates as U
+from app.core import versions as V
+from app.gui import appicon
+from app.gui import help_text as HT
+from app.gui import icons
+from app.gui.browse import BrowsePage
+from app.gui.catch import KIND_COLOR, CatchPage
+from app.gui.common import DATA_HINT, DATA_ROOT_HINT, IS_WIN
+from app.online import sources as S
+from app.online.browser_helper import BrowserBridge
+from app.gui.common import (COLORFUL, PALETTE, TAB_COLORS, Ribbon, ACCENT, ACCENT_HI, ACCENT_SOFT, APP_DIR, APP_NAME, APP_SHORT, APP_VERSION, AUTHOR, BG, BORDER,
+                            CARD, CARD_HI, COLUMNS, CRIT, ERR, FAINT, MUTED, MUTED_SOFT, OK, PLAY, PLAY_HI, SHADOW,
+                            SURFACE, TEAL, TEAL_SOFT, TEXT, THEMES, WARN, WARN_ICON, WARN_SOFT, WHITE,
+                            Banner, button, card, center_on_screen, ctk_image, error_log, fit_geometry, font, icon,
+                            open_folder, pick, px, set_root, Split, style_trees, TabBar, Tooltip, units)
+from app.core.profiles import Profiles
+from app.gui.conflicts import ConflictsPage
+from app.gui.crash import CrashPage
+from app.gui.dlc import DlcPage
+from app.gui.library import LibraryPage
+from app.gui.playsets import PlaysetsPage
 
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 REGISTRY_FILE = os.path.join(APP_DIR, "installed.json")
@@ -67,8 +73,8 @@ CATCH_FILE = os.path.join(APP_DIR, "catch_list.json")     # Browse's catch list,
 WORK_DIR = os.path.join(APP_DIR, ".work")
 HASHES_FILE = os.path.join(WORK_DIR, "file_hashes.json")    # fingerprints of files shared by several mods
 ROLES_FILE = os.path.join(WORK_DIR, "roles.pkl")           # each mod's role from the last check that had it
-TABS = ["Browse", "Catch", "Library", "Playsets", "Conflicts", "Crashes"]
-TAB_ICONS = {"Browse": "browse", "Catch": "download", "Library": "library", "Playsets": "playsets",
+TABS = ["Browse", "Catch", "Library", "Playsets", "DLC", "Conflicts", "Crashes"]
+TAB_ICONS = {"Browse": "browse", "Catch": "download", "Library": "library", "Playsets": "playsets", "DLC": "dlc",
              "Conflicts": "conflicts", "Crashes": "crash"}
 OTHER_FOLDER = "Other mod folder..."
 CHECK_KEEP_CHOICES = (10, 25, 50, 100, 200, 500)
@@ -112,6 +118,7 @@ DEFAULTS = {
     "cleanup_limit_mb": 250,      # offer to clear cached pictures and pages above this size
     "check_at_start": False,      # check the active playset at every start (else: only before playing, asked)
     "check_history": 100,         # saved checks of this many playsets
+    "disabled_dlcs": {},          # game -> DLC descriptors the game skips (dlc_load.json "disabled_dlcs")
     "role_overrides": {},         # {mod folder: {.mod file: role id}} roles you set yourself
     "lib_playset": "All mods",    # which playset the Library shows
     "hidden_issues": {},          # {mod folder: [conflict signatures]} conflicts you've hidden
@@ -122,7 +129,7 @@ DEFAULTS = {
 NOT_IN_SETTINGS_WINDOW = ("mod_dir", "workers", "game_versions", "ignored_mods", "tab", "show_log", "play_continue",
                           "play_debug", "mod_sort", "mod_sort_desc", "ws_sort", "ws_hide_installed", "ws_view",
                           "panes", "welcome_done", "geometry", "catch_links", "columns", "role_overrides",
-                          "lib_playset", "hidden_issues", "seen_version", "seen_crashes", "crash_hunt")
+                          "lib_playset", "hidden_issues", "seen_version", "seen_crashes", "crash_hunt", "disabled_dlcs")
 
 
 def load_settings():
@@ -1407,7 +1414,7 @@ class App(ctk.CTk):
         self.known_roles = {}
         try:
             with open(ROLES_FILE, "rb") as fh:
-                self.known_roles = pickle.load(fh)
+                self.known_roles = legacy.load(fh)
         except Exception:
             self.known_roles = {}
         modscan.load_hashes(HASHES_FILE)
@@ -1566,8 +1573,9 @@ class App(ctk.CTk):
         self.splash.step("Building the Conflicts tab...", 0.20)
         self.conflicts = ConflictsPage(body, self)
         self.crashes = CrashPage(body, self)
+        self.dlc = DlcPage(body, self)
         self.pages = {"Browse": self.browse, "Catch": self.catch, "Library": self.library, "Playsets": self.playsets,
-                      "Conflicts": self.conflicts, "Crashes": self.crashes}
+                      "DLC": self.dlc, "Conflicts": self.conflicts, "Crashes": self.crashes}
         for p in self.pages.values():
             p.grid(row=0, column=0, sticky="nsew")
 
@@ -1755,7 +1763,7 @@ class App(ctk.CTk):
                    "when you're ready.", color=ACCENT)
 
         def work():
-            import net as N
+            from app.online import net as N
             names, kids = {}, {}
             try:
                 net = N.Net()
@@ -1857,8 +1865,8 @@ class App(ctk.CTk):
             mine[wid] = (reg.get(wid, {}) or {}).get("steam_updated") or int(m.installed_at or 0)
 
         def work():
-            import net as N
-            import workshop as W
+            from app.online import net as N
+            from app.online import workshop as W
             net = N.Net()
             need, names, seen, frontier = {}, {}, set(ids), list(ids)
             for _ in range(3):                         # mods needed by the needed mods, three levels deep
@@ -2215,7 +2223,7 @@ class App(ctk.CTk):
         def work():
             t0 = time.time()
             try:
-                import net as N
+                from app.online import net as N
                 meta = {}
                 self.q.put(("check_progress", token, "Reading the mods' Workshop pages", 0.01))
                 try:
@@ -2326,7 +2334,7 @@ class App(ctk.CTk):
 
         def work():
             try:
-                import net as N
+                from app.online import net as N
                 net = N.Net()
                 meta = A.load_workshop(net, [w for w in wids.values() if w],
                                        os.path.join(WORK_DIR, "workshop_pages.json"))
@@ -2390,6 +2398,34 @@ class App(ctk.CTk):
     def running(self):
         return self.engine is not None
 
+    # ---- DLC the game skips (the DLC tab; written into dlc_load.json, like the official launcher)
+    def dlc_off(self, game=None):
+        """Descriptor keys of the DLC turned off for this game. The first time, what dlc_load.json says
+        (so a choice made in the official launcher carries over)."""
+        game = game or self.game()
+        if not game:
+            return []
+        saved = self.cfg.setdefault("disabled_dlcs", {})
+        if game not in saved:
+            md = self.mod_dir()
+            saved[game] = D.read_disabled(game, LA.data_dir_of(md)) if md else []
+        return list(saved.get(game) or [])
+
+    def set_dlc_off(self, keys, game=None):
+        game = game or self.game()
+        if not game:
+            return
+        self.cfg.setdefault("disabled_dlcs", {})[game] = list(keys)
+        self.save()
+        md = self.mod_dir()
+        if md and D.supported(game):
+            try:
+                D.write_disabled(game, LA.data_dir_of(md), keys, os.path.join(WORK_DIR, "backups"))
+            except Exception as e:
+                self.log(f"Couldn't write the DLC choice: {e}")
+        n = len(keys)
+        self.toast(f"{n} DLC will be off when the game starts." if n else "Every DLC will load.")
+
     def playset_keys(self):
         """(keys in the active playset, keys turned on in it)"""
         e = self.playsets.entries
@@ -2428,7 +2464,7 @@ class App(ctk.CTk):
         an = self.analysis
         if an is None:
             return
-        import roles as R
+        from app.analysis import roles as R
         ov = self.role_overrides()
         for k, f in an.facts.items():
             auto = getattr(f, "role_auto", None) or f.role
@@ -2524,6 +2560,8 @@ class App(ctk.CTk):
         self.mods, self.mods_loaded, self.updates, self.checked_at = [], False, {}, 0
         self.analysis, self.an_sig, self.check_sig = None, None, None
         self.ask_steam_owned(self.game())
+        if self.cfg.get("tab") == "DLC":
+            self.dlc.on_show()
         self.catch.draw_chain_strip()
         self.browse.game_changed()
         self.rescan()
@@ -2722,6 +2760,8 @@ class App(ctk.CTk):
         try:
             exe, args, ver, plat = LA.game_exe(game, inst) if start else ("", [], "", "")
             LA.write_load_file(game, LA.data_dir_of(md), keys, os.path.join(WORK_DIR, "backups"))
+            if D.supported(game):              # the DLC tab's choice, in case another launcher changed it
+                D.write_disabled(game, LA.data_dir_of(md), self.dlc_off(game))
         except LA.LauncherError as e:
             messagebox.showwarning(APP_NAME, str(e), parent=self)
             return
@@ -2735,7 +2775,9 @@ class App(ctk.CTk):
         except LA.LauncherError as e:
             messagebox.showwarning(APP_NAME, str(e), parent=self)
             return
-        self.toast(f"Starting {game} with \"{ps.name}\" ({len(keys)} mods).")
+        n_off = len(self.dlc_off(game)) if D.supported(game) else 0
+        self.toast(f"Starting {game} with \"{ps.name}\" ({len(keys)} mods" +
+                   (f", {n_off} DLC off" if n_off else "") + ").")
 
         def watch():
             t0 = time.time()

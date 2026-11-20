@@ -1,5 +1,45 @@
 # Changelog
 
+## 2.2 (2026-11-20)
+
+Ready for Crusader Kings III 1.21 "Florin" and Silk and Silver, and a DLC tab.
+
+### Source in folders
+* The code moved into folders: `app/core` (mods, games, DLC, playsets), `app/online` (Steam and the
+  Workshop), `app/analysis` (conflicts, checks, crashes) and `app/gui` (the windows); the icon into `assets/`.
+  `paradoxical_launcher.py` stays at the top and is still what you run and build; `gui_` file names lost
+  their prefix inside `app/gui`.
+* Settings, `.work`, downloads and history stay where they were (next to `paradoxical_launcher.py` or the
+  program). Saved playset checks, mods' facts and remembered roles from before the move still load.
+* Placeholder pictures in the DLC tab (for DLC without a thumbnail) follow the dark theme.
+
+### DLC tab
+* Every DLC installed with the game (`<game>/dlc/<folder>/<code>.dlc`, found through launcher-settings.json
+  "dlcPath") as a card: its thumbnail, name and kind (Expansion, Core expansion, Flavour pack, Event pack,
+  Cosmetic pack, Music pack; from the folder code and `dlc_metadata`), biggest and newest first.
+* A switch per card, Turn all on / Turn all off, filters (All, Expansions, Packs, Off) and search; the tab's
+  counter shows how many are off. Double-click a card (or Store) for the store page.
+* Off DLC go into `dlc_load.json` "disabled_dlcs" (`dlc/dlc031_ep5/dlc031.dlc`), the switch the official
+  launcher uses, at once and again on every Play (in case another launcher changed it). The first time, the
+  choice already in dlc_load.json carries over. Saved per game.
+* Crusader Kings III, Stellaris, Europa Universalis IV, Hearts of Iron IV and Imperator. Victoria 3 and Europa
+  Universalis V (content_load.json) are listed but can't be turned off from here yet.
+
+### Crusader Kings III 1.21
+* The game's knowledge is learned again for 1.21 (new script words such as trade goods, roads and districts;
+  the knowledge and every mod's facts are re-read once, as the reading rules changed).
+* Buildings in 1.21's subfolders (`holding_buildings`, `regular_district_buildings`, `resource_district_buildings`,
+  `trade_post_buildings`...) count as one set of buildings, as the game loads them: two mods changing the same
+  building are found whichever subfolder or file they use.
+* New check, "Game files moved since the mod was made": a mod file at a path the game no longer uses while the
+  game has a file of that name elsewhere in the same folder (`common/buildings/00_castle_buildings.txt`, now
+  `common/buildings/holding_buildings/00_castle_buildings.txt`). The mod's copy no longer replaces the game's,
+  both load and things are defined twice. Remedy: "Needs an update".
+* New folders named in conflicts: trade goods, trade good categories, toll levels, county trade goods, trade
+  tasks, roads, road modifiers, districts, tax slots, legitimacy, lease contracts, title types, house relations
+  and aspirations, confederations, puppets, diarchies, holy orders and more. Any other folder is named after
+  itself ("message filter type") instead of "game object".
+
 ## 2.1 (2026-11-02)
 
 The conflict check, rebuilt, many times faster, and only when you want it.

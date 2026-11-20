@@ -10,9 +10,9 @@ APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$ICON_DIR" "$APP_DIR"
 PY=${PYTHON:-python3}
 if "$PY" -c "import PIL" 2>/dev/null; then
-  "$PY" -c "from PIL import Image; im=Image.open('icon.ico'); im.size=max(im.info.get('sizes',[im.size])); im.save('$ICON_DIR/paradoxical-launcher.png')"
+  "$PY" -c "from PIL import Image; im=Image.open('assets/icon.ico'); im.size=max(im.info.get('sizes',[im.size])); im.save('$ICON_DIR/paradoxical-launcher.png')"
 else
-  cp icon.ico "$ICON_DIR/paradoxical-launcher.ico"
+  cp assets/icon.ico "$ICON_DIR/paradoxical-launcher.ico"
 fi
 cat > "$APP_DIR/paradoxical-launcher.desktop" <<DESK
 [Desktop Entry]
